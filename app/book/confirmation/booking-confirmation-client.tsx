@@ -4,20 +4,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { AppointmentRecord } from "@/lib/appointments/appointment.types";
+import { normalizeCustomerEmail, setStoredCustomerEmail } from "@/lib/appointments/customer-session";
 
-const STORAGE_KEY = "cutting_edge_appointments";
 const CONFIRMATION_DRAFT_PREFIX = "cutting_edge_confirmation_draft";
-
-function saveAppointmentLocally(appointment: AppointmentRecord) {
-  const existing: AppointmentRecord[] = JSON.parse(
-    localStorage.getItem(STORAGE_KEY) ?? "[]",
-  );
-  localStorage.setItem(STORAGE_KEY, JSON.stringify([appointment, ...existing]));
-}
-
-function generateRef() {
-  return `APT-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-}
 
 function getDayKey(isoDate: string) {
   const parsed = new Date(isoDate);
@@ -32,10 +21,10 @@ function normalizeTimeLabel(value: string) {
 }
 
 const primaryButtonClassName =
-  "inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]";
+  "btn btn-primary btn-lg";
 
 const secondaryButtonClassName =
-  "inline-flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-6 py-3 text-sm font-semibold text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)] hover:border-[var(--accent-strong)]";
+  "btn btn-secondary btn-secondary-accent btn-lg";
 
 type Appointment = {
   service: string;
@@ -132,25 +121,88 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
     }
   }, [confirmationDraftKey, fullName, email, phone, notes]);
 
-  function getActiveSameDayAppointment() {
-    const stored: AppointmentRecord[] = JSON.parse(
-      localStorage.getItem(STORAGE_KEY) ?? "[]",
-    );
+  async function getActiveSameDayAppointment() {
+    const normalizedEmail = normalizeCustomerEmail(email);
+    if (!normalizedEmail) {
+      return null;
+    }
+
+    const response = await fetch(`/api/appointments?email=${encodeURIComponent(normalizedEmail)}`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("Unable to load existing appointments.");
+    }
+
+    const stored = (await response.json()) as AppointmentRecord[];
     const requestedDayKey = getDayKey(appointment.dateIso);
 
     return (
       stored.find(
         (a) =>
-          (a.status === "pending" || a.status === "accepted") &&
+          a.status === "pending" &&
           ((requestedDayKey && getDayKey(a.dateIso) === requestedDayKey) ||
             a.dateLabel === appointment.date),
       ) ?? null
     );
   }
 
-  function handleCancelExisting() {
-    setIsConflictModalOpen(false);
-    router.push("/appointments");
+  async function handleOverwriteExistingAppointment() {
+    if (!existingAppointment || !canSubmit || isSubmitting) {
+      return;
+    }
+
+    const normalizedEmail = normalizeCustomerEmail(email);
+
+    setIsSubmitting(true);
+    setSubmitError(null);
+
+    try {
+      const response = await fetch(`/api/appointments/${encodeURIComponent(existingAppointment.ref)}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          overwrite: true,
+          service: appointment.service,
+          barber: appointment.barber,
+          dateIso: appointment.dateIso,
+          dateLabel: appointment.date,
+          time: appointment.time,
+          customerName: fullName.trim(),
+          customerEmail: normalizedEmail,
+          customerPhone: phone.trim(),
+          notes: notes.trim() || null,
+        }),
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok || !payload || typeof payload !== "object") {
+        throw new Error(
+          payload && typeof payload === "object" && "error" in payload
+            ? String(payload.error)
+            : "Unable to replace appointment.",
+        );
+      }
+
+      const overwrittenAppointment = payload as AppointmentRecord;
+      setStoredCustomerEmail(normalizedEmail);
+      setAppointmentRef(overwrittenAppointment.ref);
+      setSubmitSuccess(true);
+      setConflictChoice("resolved");
+      setIsConflictModalOpen(false);
+      localStorage.removeItem(confirmationDraftKey);
+      router.push("/appointments");
+    } catch (requestError) {
+      setSubmitError(
+        requestError instanceof Error ? requestError.message : "Unable to replace appointment.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   function handleLeaveConflictModal() {
@@ -168,13 +220,15 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
     phone.trim() !== "" &&
     !isPastSelection;
 
-  function handleRequestAppointment() {
+  async function handleRequestAppointment() {
     if (!canSubmit || isSubmitting) {
       return;
     }
 
+    const normalizedEmail = normalizeCustomerEmail(email);
+
     if (!shouldOverwriteExisting) {
-      const activeSameDay = getActiveSameDayAppointment();
+      const activeSameDay = await getActiveSameDayAppointment();
       if (activeSameDay) {
         setExistingAppointment(activeSameDay);
         setIsExactDateTimeConflict(
@@ -188,50 +242,39 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
 
     setIsSubmitting(true);
     setSubmitError(null);
-  setSubmitSuccess(false);
+    setSubmitSuccess(false);
 
     try {
-      if (shouldOverwriteExisting && existingAppointment) {
-        const updated: AppointmentRecord[] = JSON.parse(
-          localStorage.getItem(STORAGE_KEY) ?? "[]",
-        ).map((a: AppointmentRecord) =>
-          a.ref === existingAppointment.ref
-            ? {
-                ...a,
-                status: "pending" as const,
-                service: appointment.service,
-                barber: appointment.barber,
-                dateIso: appointment.dateIso,
-                dateLabel: appointment.date,
-                time: appointment.time,
-                customerName: fullName.trim(),
-                customerEmail: email.trim().toLowerCase(),
-                customerPhone: phone.trim(),
-                notes: notes.trim() || null,
-              }
-            : a,
-        );
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        setAppointmentRef(existingAppointment.ref);
-      } else {
-        const createdAppointment: AppointmentRecord = {
-          ref: generateRef(),
-          createdAt: new Date().toISOString(),
-          status: "pending",
+      const response = await fetch("/api/appointments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           service: appointment.service,
           barber: appointment.barber,
           dateIso: appointment.dateIso,
           dateLabel: appointment.date,
           time: appointment.time,
           customerName: fullName.trim(),
-          customerEmail: email.trim().toLowerCase(),
+          customerEmail: normalizedEmail,
           customerPhone: phone.trim(),
           notes: notes.trim() || null,
-        };
+        }),
+      });
 
-        saveAppointmentLocally(createdAppointment);
-        setAppointmentRef(createdAppointment.ref);
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload || typeof payload !== "object") {
+        throw new Error(
+          payload && typeof payload === "object" && "error" in payload
+            ? String(payload.error)
+            : "Unable to save appointment.",
+        );
       }
+
+      const createdAppointment = payload as AppointmentRecord;
+      setStoredCustomerEmail(normalizedEmail);
+      setAppointmentRef(createdAppointment.ref);
       setSubmitSuccess(true);
       localStorage.removeItem(confirmationDraftKey);
       router.push("/appointments");
@@ -245,15 +288,15 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 sm:px-8 lg:px-12">
-      {/* Conflict modal — shown when user already has an active same-day appointment */}
+    <main className="w-full">
+      {/* Conflict modal */}
       {conflictChoice === "pending" && existingAppointment && isConflictModalOpen ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[color:rgba(27,13,12,0.45)] p-6"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--overlay-backdrop-soft)] p-6"
           onClick={handleLeaveConflictModal}
         >
           <div
-            className="w-full max-w-3xl rounded-[2rem] border border-[var(--accent-strong)] bg-[color:rgba(248,237,220,0.98)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.28)]"
+            className="w-full max-w-3xl rounded-[2rem] border border-[var(--accent-strong)] bg-[color:var(--surface-elevated-strong)] p-8 shadow-[0_24px_80px_var(--shadow-elevated-strong)]"
             onClick={(event) => event.stopPropagation()}
           >
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-[var(--accent)]">
@@ -272,20 +315,23 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
             </p>
             <p className="mt-2 text-base leading-7 text-[var(--muted)]">
               {isExactDateTimeConflict
-                ? "This matches your existing day and time. You can view your current booking, or choose Edit existing and save this request to overwrite it."
-                : "You can view your current booking, or choose Edit existing and save this request to overwrite the original appointment."}
+                ? "This matches your existing pending slot. You can replace it with the details from this form."
+                : "You already have a pending appointment on this day. You can replace it with the details from this form."}
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
               <button
                 type="button"
-                className="inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
-                onClick={handleCancelExisting}
+                className={primaryButtonClassName}
+                onClick={() => {
+                  void handleOverwriteExistingAppointment();
+                }}
+                disabled={!canSubmit || isSubmitting}
               >
-                Replace existing appointment
+                {isSubmitting ? "Replacing..." : "Replace existing appointment"}
               </button>
               <button
                 type="button"
-                className="inline-flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-6 py-3 text-sm font-semibold text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)]"
+                className={secondaryButtonClassName}
                 onClick={handleBookNewAppointment}
               >
                 Book new appointment
@@ -295,32 +341,38 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
         </div>
       ) : null}
 
-      <section className="grid gap-6 rounded-[2rem] border border-[var(--border)] bg-[color:rgba(248,237,220,0.92)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.12)] md:grid-cols-[1.05fr_0.95fr]">
-        <div className="space-y-5">
-          <div className="space-y-3">
-            <h1 className="max-w-3xl text-4xl font-semibold tracking-[-0.03em] text-[var(--foreground)] sm:text-5xl">
-              Review your appointment before you request it.
-            </h1>
-            <p className="max-w-2xl text-base leading-7 text-[var(--muted)]">
-              Confirm the selected details and add your contact information.
-            </p>
-          </div>
+      <div className="home-band home-band--canvas">
+        <div className="site-shell">
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
+            Confirm booking
+          </p>
+          <h1 className="mt-2 text-[clamp(2rem,4vw,3.5rem)] font-bold leading-tight tracking-tight text-[var(--foreground)]">
+            Review your appointment
+          </h1>
+          <p className="mt-2 text-lg text-[var(--muted)]">
+            Confirm the selected details and add your contact information.
+          </p>
+        </div>
+      </div>
 
-          <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-sm">
-            <div className="space-y-2">
-              <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
-                Contact details
+      <div className="home-band home-band--sand">
+        <div className="site-shell">
+          <section className="grid gap-8 md:grid-cols-[1.05fr_0.95fr] md:items-start">
+
+        <div className="space-y-6">
+          <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-6 shadow-sm">
+            <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
+              Contact details
+            </p>
+            <h2 className="mt-2 text-xl font-semibold text-[var(--foreground)]">
+              Tell us how to reach you
+            </h2>
+            <p className="mt-1 text-sm text-[var(--muted)]">Fields marked with * are required.</p>
+            {isPastSelection ? (
+              <p className="mt-2 text-sm font-medium text-[var(--accent-strong)]">
+                This selected appointment time has already passed. Please go back and choose a future slot.
               </p>
-              <h2 className="text-2xl font-semibold text-[var(--foreground)]">
-                Tell us how to reach you
-              </h2>
-              <p className="text-sm text-[var(--muted)]">Fields marked with * are required.</p>
-              {isPastSelection ? (
-                <p className="text-sm font-medium text-[var(--accent-strong)]">
-                  This selected appointment time has already passed. Please go back and choose a future slot.
-                </p>
-              ) : null}
-            </div>
+            ) : null}
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <label className="flex flex-col gap-2">
@@ -369,7 +421,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
                 />
               </label>
             </div>
-          </section>
+          </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">
             <button
@@ -403,49 +455,49 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
           ) : null}
         </div>
 
-        <aside className="rounded-[1.75rem] bg-[radial-gradient(circle_at_top,_rgba(240,196,108,0.2),_rgba(255,255,255,0)_56%),linear-gradient(135deg,var(--panel),#3d0d16)] p-6 text-[var(--surface)] shadow-inner">
-          <p className="text-sm uppercase tracking-[0.3em] text-[var(--panel-highlight)]">
+        <aside className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-6 shadow-sm">
+          <p className="text-sm uppercase tracking-[0.3em] text-[var(--accent)]">
             Request summary
           </p>
-          <div className="mt-5 space-y-3 rounded-[1.5rem] border border-[color:rgba(244,228,195,0.14)] bg-[var(--panel-card)] p-4">
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Appointment</span>
-              <span className="text-sm font-medium text-[var(--surface)]">{appointment.service}</span>
+          <div className="mt-5 space-y-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--surface-soft)] px-4 py-3">
+              <span className="text-sm text-[var(--muted)]">Appointment</span>
+              <span className="text-sm font-medium text-[var(--foreground)]">{appointment.service}</span>
             </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Assigned barber</span>
-              <span className="text-sm font-medium text-[var(--surface)]">{appointment.barber}</span>
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--surface-soft)] px-4 py-3">
+              <span className="text-sm text-[var(--muted)]">Assigned barber</span>
+              <span className="text-sm font-medium text-[var(--foreground)]">{appointment.barber}</span>
             </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Requested slot</span>
-              <span className="text-sm font-medium text-[var(--panel-highlight)]">{appointment.time}</span>
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--surface-soft)] px-4 py-3">
+              <span className="text-sm text-[var(--muted)]">Requested slot</span>
+              <span className="text-sm font-medium text-[var(--accent)]">{appointment.time}</span>
             </div>
-            <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
-              <p className="text-sm text-[var(--panel-text-muted)]">Contact</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--surface)]">
+            <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
+              <p className="text-sm text-[var(--muted)]">Contact</p>
+              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
                 {fullName || "Waiting for your contact details"}
               </p>
-              <p className="mt-2 text-sm text-[var(--panel-text-muted)]">{email || "No email added yet"}</p>
-              <p className="mt-1 text-sm text-[var(--panel-text-muted)]">{phone || "No phone number added yet"}</p>
+              <p className="mt-2 text-sm text-[var(--muted)]">{email || "No email added yet"}</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">{phone || "No phone number added yet"}</p>
             </div>
             {notes ? (
-              <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
-                <p className="text-sm text-[var(--panel-text-muted)]">Notes</p>
-                <p className="mt-2 text-sm leading-7 text-[var(--surface)]">{notes}</p>
+              <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
+                <p className="text-sm text-[var(--muted)]">Notes</p>
+                <p className="mt-2 text-sm leading-7 text-[var(--foreground)]">{notes}</p>
               </div>
             ) : null}
-            <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
-              <p className="text-sm text-[var(--panel-text-muted)]">Reference</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--surface)]">
+            <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
+              <p className="text-sm text-[var(--muted)]">Reference</p>
+              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
                 {appointmentRef ?? "Will be generated when the request is sent"}
               </p>
             </div>
-            <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
-              <p className="text-sm text-[var(--panel-text-muted)]">Status</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--surface)]">
+            <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
+              <p className="text-sm text-[var(--muted)]">Status</p>
+              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
                 {isPastSelection ? "Past time selected" : "Waiting for your confirmation"}
               </p>
-              <p className="mt-2 text-sm leading-7 text-[var(--panel-text-muted)]">
+              <p className="mt-2 text-sm leading-7 text-[var(--muted)]">
                 {isPastSelection
                   ? "This slot is no longer valid. Return to the booking page and choose a future day and time."
                   : "Confirm the details on the left, add your contact info, and submit the request when you are ready."}
@@ -454,6 +506,8 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
           </div>
         </aside>
       </section>
+        </div>
+      </div>
     </main>
   );
 }

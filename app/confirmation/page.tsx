@@ -38,7 +38,7 @@ export default async function ConfirmationPage({ searchParams }: ConfirmationPag
   if (!rawDate || !requestedService || !requestedBarber || !requestedTime) {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col items-start gap-6 px-6 py-8 sm:px-8 lg:px-12">
-        <section className="w-full rounded-[2rem] border border-[var(--border)] bg-[color:rgba(248,237,220,0.92)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.12)]">
+        <section className="w-full rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
           <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
             Booking confirmation
           </p>
@@ -65,7 +65,7 @@ export default async function ConfirmationPage({ searchParams }: ConfirmationPag
   if (Number.isNaN(parsedDate.getTime()) || normalizedHour === null) {
     return (
       <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col items-start gap-6 px-6 py-8 sm:px-8 lg:px-12">
-        <section className="w-full rounded-[2rem] border border-[var(--border)] bg-[color:rgba(248,237,220,0.92)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.12)]">
+        <section className="w-full rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
           <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
             Booking confirmation
           </p>

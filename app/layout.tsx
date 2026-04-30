@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CustomerHeader } from "@/app/components/customer-header";
+import { AuthProvider } from "@/app/components/auth-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,8 +19,10 @@ export default function RootLayout({
       className="h-full antialiased"
     >
       <body className="min-h-full bg-background text-foreground flex flex-col font-sans">
-        <CustomerHeader />
-        <div className="flex-1 pt-36 md:pt-28">{children}</div>
+        <AuthProvider>
+          <CustomerHeader />
+          <div className="flex-1 pt-[clamp(7.25rem,14vw,8.75rem)]">{children}</div>
+        </AuthProvider>
       </body>
     </html>
   );

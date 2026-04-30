@@ -13,6 +13,14 @@
 # testing
 /coverage
 
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# local docker overrides
+docker-compose.override.yml
+docker-compose.local.yml
+
 # next.js
 /.next/
 /out/
@@ -50,4 +58,7 @@ temp/
 
 # typescript
 *.tsbuildinfo
+
+# local reference projects (never committed)
+/reference/
 next-env.d.ts

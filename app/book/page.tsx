@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const primaryButtonClassName =
-  "inline-flex select-none items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]";
+  "btn btn-primary btn-lg select-none";
 
 const secondaryButtonClassName =
-  "inline-flex select-none items-center justify-center rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-6 py-3 text-sm font-semibold text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)] hover:border-[var(--accent-strong)]";
+  "btn btn-secondary btn-secondary-accent btn-lg select-none";
 
 const services = ["Classic cut", "Fade + beard", "VIP grooming"];
 const barbers = ["Luis", "Marcos", "Andrea"];
@@ -75,21 +75,17 @@ function isSameDay(first: Date, second: Date) {
   );
 }
 
-function getInitialBookingSelection(currentMoment: Date) {
-  if (typeof window === "undefined") {
-    return {
-      date: null as Date | null,
-      services: [] as string[],
-      barber: "",
-      time: "",
-    };
-  }
+function getBookingSelectionFromParams(params: URLSearchParams, currentMoment: Date) {
+  const requestedServices = params.getAll("service").reduce<string[]>((accumulator, rawValue) => {
+    for (const parsedValue of rawValue.split(",")) {
+      const trimmedValue = parsedValue.trim();
+      if (services.includes(trimmedValue)) {
+        accumulator.push(trimmedValue);
+      }
+    }
 
-  const params = new URLSearchParams(window.location.search);
-  const requestedServices = (params.get("service") ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => services.includes(value));
+    return accumulator;
+  }, []);
   const requestedBarber = params.get("barber") ?? "";
   const requestedDate = params.get("date");
   const requestedTime = params.get("time") ?? "";
@@ -115,7 +111,7 @@ function getInitialBookingSelection(currentMoment: Date) {
 
   return {
     date: selectedDate,
-    services: Array.from(new Set(requestedServices)),
+    services: Array.from(new Set<string>(requestedServices)),
     barber: barbers.includes(requestedBarber) ? requestedBarber : "",
     time: selectedTime,
   };
@@ -123,14 +119,28 @@ function getInitialBookingSelection(currentMoment: Date) {
 
 export default function BookPage() {
   const [currentMoment] = useState(() => new Date());
-  const [initialSelection] = useState(() => getInitialBookingSelection(currentMoment));
   const [visibleMonth, setVisibleMonth] = useState(() =>
-    startOfMonth(initialSelection.date ?? getInitialBookingDate(currentMoment)),
+    startOfMonth(getInitialBookingDate(currentMoment)),
   );
-  const [selectedDate, setSelectedDate] = useState<Date | null>(initialSelection.date);
-  const [selectedServices, setSelectedServices] = useState<string[]>(initialSelection.services);
-  const [selectedBarber, setSelectedBarber] = useState(initialSelection.barber);
-  const [selectedTime, setSelectedTime] = useState(initialSelection.time);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [selectedServices, setSelectedServices] = useState<string[]>([]);
+  const [selectedBarber, setSelectedBarber] = useState("");
+  const [selectedTime, setSelectedTime] = useState("");
+  const hasAppliedQueryPrefill = useRef(false);
+
+  useEffect(() => {
+    if (hasAppliedQueryPrefill.current) {
+      return;
+    }
+
+    const selection = getBookingSelectionFromParams(new URLSearchParams(window.location.search), currentMoment);
+    setSelectedServices(selection.services);
+    setSelectedBarber(selection.barber);
+    setSelectedDate(selection.date);
+    setSelectedTime(selection.time);
+    setVisibleMonth(startOfMonth(selection.date ?? getInitialBookingDate(currentMoment)));
+    hasAppliedQueryPrefill.current = true;
+  }, [currentMoment]);
 
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(visibleMonth);
@@ -179,63 +189,27 @@ export default function BookPage() {
   )}&time=${encodeURIComponent(selectedTime)}`;
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 sm:px-8 lg:px-12">
-      <section className="grid gap-6 rounded-[2rem] border border-[var(--border)] bg-[color:rgba(248,237,220,0.92)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.12)] md:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-5">
-          <span className="inline-flex rounded-full border border-[var(--border)] bg-[var(--accent-soft)] px-4 py-1 text-sm font-medium text-[var(--accent-strong)]">
-            Customer booking calendar
-          </span>
-          <div className="space-y-3">
-            <h1 className="max-w-3xl text-5xl font-semibold tracking-[-0.04em] text-[var(--foreground)] sm:text-6xl">
-              Select a day, then lock in your time.
+    <main className="w-full">
+      <div className="home-band home-band--canvas">
+        <div className="site-shell flex flex-col gap-8">
+          <div>
+            <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
+              Customer booking
+            </p>
+            <h1 className="mt-2 text-[clamp(2rem,4vw,3.5rem)] font-bold leading-tight tracking-tight text-[var(--foreground)]">
+              Book your appointment
             </h1>
-            <p className="max-w-2xl text-lg leading-8 text-[var(--muted)]">
-              Admin scheduling is not set up yet, so every day is currently open. Customers can choose any date and book between 6:00 AM and 8:00 PM.
+            <p className="mt-2 text-lg text-[var(--muted)]">
+              Pick a date, choose your service and barber, then lock in a time.
             </p>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4">
-              <p className="text-sm text-[var(--muted)]">Selected date</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">{selectedDateLabel}</p>
-            </div>
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4">
-              <p className="text-sm text-[var(--muted)]">Open hours</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">6:00 AM - 8:00 PM</p>
-            </div>
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4">
-              <p className="text-sm text-[var(--muted)]">Booking status</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
-                {canContinue ? "Ready to continue" : "Select date, service, barber, and time"}
-              </p>
-            </div>
-          </div>
         </div>
+      </div>
 
-        <aside className="rounded-[1.75rem] bg-[radial-gradient(circle_at_top,_rgba(240,196,108,0.2),_rgba(255,255,255,0)_56%),linear-gradient(135deg,var(--panel),#3d0d16)] p-6 text-[var(--surface)] shadow-inner">
-          <p className="text-sm uppercase tracking-[0.3em] text-[var(--panel-highlight)]">
-            Current selection
-          </p>
-          <div className="mt-5 space-y-3 rounded-[1.5rem] border border-[color:rgba(244,228,195,0.14)] bg-[var(--panel-card)] p-4">
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Service</span>
-              <span className="text-sm font-medium text-[var(--surface)]">
-                {selectedServices.length > 0 ? selectedServices.join(", ") : "Not selected"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Barber</span>
-              <span className="text-sm font-medium text-[var(--surface)]">{selectedBarber}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Time</span>
-              <span className="text-sm font-medium text-[var(--panel-highlight)]">{selectedTime}</span>
-            </div>
-          </div>
-        </aside>
-      </section>
-
+      <div className="home-band home-band--sand">
+        <div className="site-shell">
       <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-        <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm">
+        <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-6 shadow-sm">
           <div className="flex flex-col gap-3 border-b border-[var(--border)] pb-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
@@ -284,7 +258,7 @@ export default function BookPage() {
                   key={day.toISOString()}
                   className={`aspect-square rounded-2xl border text-sm font-medium transition ${
                     unavailable
-                      ? "cursor-not-allowed border-[var(--border)] bg-[color:rgba(239,223,198,0.45)] text-[var(--muted)] opacity-50"
+                      ? "cursor-not-allowed border-[var(--border)] bg-[var(--disabled-section-bg)] text-[var(--muted)] opacity-50"
                       : selected
                       ? "border-[var(--accent-strong)] bg-[var(--button-primary)] text-[var(--surface)]"
                       : "border-[var(--border)] bg-[var(--surface-soft)] text-[var(--foreground)] hover:bg-[var(--button-secondary)]"
@@ -306,8 +280,8 @@ export default function BookPage() {
           </div>
         </section>
 
-        <aside className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm">
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
+        <aside className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-6 shadow-sm">
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
             Booking details
           </p>
           <div className="mt-5 space-y-5">
@@ -351,21 +325,22 @@ export default function BookPage() {
 
             <div>
               <p className="text-sm font-medium text-[var(--accent)]">Available times</p>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                Open every day from 6:00 AM to 8:00 PM. Past times are automatically removed.
-              </p>
               {!selectedDate ? (
-                <p className="mt-3 text-sm font-medium text-[var(--accent-strong)]">
-                  Select a date first to view available times.
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Select a date first to see available times.
                 </p>
               ) : null}
-              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <div className="mt-3 grid grid-cols-3 gap-2">
                 {availableTimes.map((time) => (
                   <button
                     key={time.label}
-                    className={time.label === selectedTime ? primaryButtonClassName : secondaryButtonClassName}
                     type="button"
                     onClick={() => setSelectedTime(time.label)}
+                    className={`rounded-xl border py-2 text-center text-sm font-semibold transition ${
+                      time.label === selectedTime
+                        ? "border-[var(--accent-strong)] bg-[var(--button-primary)] text-[var(--surface)]"
+                        : "border-[var(--border)] bg-[var(--surface-soft)] text-[var(--foreground)] hover:bg-[var(--button-secondary)]"
+                    }`}
                   >
                     {time.label}
                   </button>
@@ -390,6 +365,8 @@ export default function BookPage() {
           </div>
         </aside>
       </section>
+        </div>
+      </div>
     </main>
   );
 }

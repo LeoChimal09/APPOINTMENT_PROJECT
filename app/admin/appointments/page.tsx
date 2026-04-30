@@ -2,13 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import type { AppointmentRecord, AppointmentStatus } from "@/lib/appointments/appointment.types";
-import { getStoredCustomerEmail } from "@/lib/appointments/customer-session";
 import {
-  clearUnreadAppointmentStatusChangeNotifications,
-  getUnreadAppointmentStatusChangeNotifications,
-  type AppointmentStatusChangeNotification,
-} from "@/lib/appointments/status-notifications";
+  canTransitionAppointmentStatus,
+  type AppointmentRecord,
+  type AppointmentStatus,
+} from "@/lib/appointments/appointment.types";
 
 const statusPillClassMap: Record<AppointmentStatus, string> = {
   pending: "bg-[var(--accent-soft)] text-[var(--accent-strong)] border border-[var(--border)]",
@@ -35,59 +33,69 @@ const statusStripeClassMap: Record<AppointmentStatus, string> = {
 };
 
 const statusOrder: AppointmentStatus[] = ["pending", "accepted", "denied", "cancelled", "completed"];
-const actionButtonClassName =
-  "btn btn-secondary btn-compact";
+const workflowActionOrder: AppointmentStatus[] = ["accepted", "cancelled", "completed"];
 const summaryIconButtonClassName =
   "btn-icon";
 
 type ConfirmAction =
-  | { type: "cancel"; ref: string }
-  | { type: "delete"; ref: string }
+  | { type: "hide"; ref: string }
   | { type: "clearAll" }
   | null;
 
-function canHideFromHistory(status: AppointmentStatus) {
-  return status === "completed" || status === "cancelled" || status === "denied";
+function canHideFromDashboard(status: AppointmentStatus) {
+  return status === "completed" || status === "denied" || status === "cancelled";
 }
 
-export default function MyAppointmentsPage() {
-  const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
-  const [statusChangeNotifications, setStatusChangeNotifications] = useState<AppointmentStatusChangeNotification[]>([]);
-  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
-  const [customerEmail, setCustomerEmail] = useState("");
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+function formatStatusAction(status: AppointmentStatus) {
+  switch (status) {
+    case "accepted":
+      return "Accept";
+    case "completed":
+      return "Complete";
+    case "cancelled":
+      return "Cancel";
+    default:
+      return status;
+  }
+}
 
-  useEffect(() => {
-    setStatusChangeNotifications(getUnreadAppointmentStatusChangeNotifications());
-    clearUnreadAppointmentStatusChangeNotifications();
-  }, []);
+function getWorkflowButtonClass(status: AppointmentStatus, disabled: boolean) {
+  const baseClassName = "btn btn-compact";
+
+  if (disabled) {
+    return `${baseClassName} cursor-not-allowed border-[var(--tone-border-mid)] bg-[var(--tone-surface-soft)] text-[var(--muted)]`;
+  }
+
+  if (status === "accepted") {
+    return `${baseClassName} border-[var(--panel-highlight)] text-[var(--panel-highlight)] hover:bg-[var(--tone-surface-soft)]`;
+  }
+
+  if (status === "cancelled") {
+    return `${baseClassName} border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--tone-surface-soft)]`;
+  }
+
+  return `${baseClassName} border-[var(--accent-soft)] text-[var(--accent-soft)] hover:bg-[var(--tone-surface-soft)]`;
+}
+
+export default function AdminAppointmentsPage() {
+  const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
+  const [cancelNoteTargetRef, setCancelNoteTargetRef] = useState<string | null>(null);
+  const [cancelNoteInput, setCancelNoteInput] = useState("");
 
   useEffect(() => {
     let active = true;
 
     async function loadAppointments() {
-      const email = getStoredCustomerEmail();
-
-      if (!active) {
-        return;
-      }
-
-      setCustomerEmail(email);
-
-      if (!email) {
-        setAppointments([]);
-        setError(null);
-        setIsLoading(false);
-        return;
-      }
-
       try {
-        const response = await fetch(`/api/appointments?email=${encodeURIComponent(email)}`, {
+        const response = await fetch("/api/appointments?scope=owner", {
           cache: "no-store",
         });
 
         const payload = await response.json().catch(() => null);
+
         if (!response.ok) {
           throw new Error(
             payload && typeof payload === "object" && "error" in payload
@@ -102,12 +110,11 @@ export default function MyAppointmentsPage() {
         }
       } catch (requestError) {
         if (active) {
-          setAppointments([]);
           setError(requestError instanceof Error ? requestError.message : "Unable to load appointments.");
         }
       } finally {
         if (active) {
-          setIsLoading(false);
+          setLoading(false);
         }
       }
     }
@@ -118,110 +125,6 @@ export default function MyAppointmentsPage() {
       active = false;
     };
   }, []);
-
-  async function handleCancel(ref: string) {
-    const response = await fetch(`/api/appointments/${encodeURIComponent(ref)}`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        status: "cancelled",
-        customerEmail,
-      }),
-    });
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload || typeof payload !== "object") {
-      throw new Error(
-        payload && typeof payload === "object" && "error" in payload
-          ? String(payload.error)
-          : "Unable to cancel appointment.",
-      );
-    }
-
-    setError(null);
-    setAppointments((prev) =>
-      prev.map((appointment) =>
-        appointment.ref === ref ? (payload as AppointmentRecord) : appointment,
-      ),
-    );
-  }
-
-  async function handleDelete(ref: string) {
-    const response = await fetch(`/api/appointments/${encodeURIComponent(ref)}`, {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ customerEmail }),
-    });
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(
-        payload && typeof payload === "object" && "error" in payload
-          ? String(payload.error)
-          : "Unable to hide appointment.",
-      );
-    }
-
-    setError(null);
-    setAppointments((prev) => prev.filter((appointment) => appointment.ref !== ref));
-  }
-
-  async function handleClearAll() {
-    const refsToDelete = appointments
-      .filter((appointment) => canHideFromHistory(appointment.status))
-      .map((appointment) => appointment.ref);
-
-    await Promise.all(refsToDelete.map((ref) => handleDelete(ref)));
-  }
-
-  async function runConfirmAction() {
-    if (!confirmAction) {
-      return;
-    }
-
-    try {
-      if (confirmAction.type === "cancel") {
-        await handleCancel(confirmAction.ref);
-      }
-
-      if (confirmAction.type === "delete") {
-        await handleDelete(confirmAction.ref);
-      }
-
-      if (confirmAction.type === "clearAll") {
-        await handleClearAll();
-      }
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Unable to update appointments.");
-    } finally {
-      setConfirmAction(null);
-    }
-  }
-
-  const confirmationContent =
-    confirmAction?.type === "cancel"
-      ? {
-          title: "Cancel this appointment?",
-          description: "This request will move to cancelled status.",
-          confirmLabel: "Yes, cancel",
-        }
-      : confirmAction?.type === "delete"
-      ? {
-          title: "Hide from history?",
-          description: "This appointment will be removed from your history only.",
-          confirmLabel: "Yes, hide",
-        }
-      : confirmAction?.type === "clearAll"
-      ? {
-          title: "Clear history?",
-          description: "Completed, cancelled, and denied appointments will be removed from your history.",
-          confirmLabel: "Yes, clear",
-        }
-      : null;
 
   const sortedAppointments = useMemo(() => {
     return [...appointments].sort((first, second) => {
@@ -236,104 +139,195 @@ export default function MyAppointmentsPage() {
     });
   }, [appointments]);
 
+  async function handleStatusChange(ref: string, status: AppointmentStatus, cancellationNote?: string) {
+    const response = await fetch(`/api/appointments/${encodeURIComponent(ref)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        status,
+        ...(cancellationNote && cancellationNote.trim() ? { cancellationNote: cancellationNote.trim() } : {}),
+      }),
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok || !payload || typeof payload !== "object") {
+      throw new Error(
+        payload && typeof payload === "object" && "error" in payload
+          ? String(payload.error)
+          : "Unable to update appointment status.",
+      );
+    }
+
+    setError(null);
+    setAppointments((currentAppointments) =>
+      currentAppointments.map((appointment) =>
+        appointment.ref === ref ? (payload as AppointmentRecord) : appointment,
+      ),
+    );
+  }
+
+  async function handleHideFromOwner(ref: string) {
+    const response = await fetch(`/api/appointments/${encodeURIComponent(ref)}`, {
+      method: "DELETE",
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(
+        payload && typeof payload === "object" && "error" in payload
+          ? String(payload.error)
+          : "Unable to hide appointment from dashboard.",
+      );
+    }
+
+    setError(null);
+    setAppointments((currentAppointments) =>
+      currentAppointments.filter((appointment) => appointment.ref !== ref),
+    );
+  }
+
+  async function handleClearAll() {
+    const refsToHide = appointments
+      .filter((appointment) => canHideFromDashboard(appointment.status))
+      .map((appointment) => appointment.ref);
+
+    await Promise.all(refsToHide.map((ref) => handleHideFromOwner(ref)));
+  }
+
+  async function runConfirmAction() {
+    if (!confirmAction) {
+      return;
+    }
+
+    try {
+      if (confirmAction.type === "hide") {
+        await handleHideFromOwner(confirmAction.ref);
+      }
+
+      if (confirmAction.type === "clearAll") {
+        await handleClearAll();
+      }
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error ? requestError.message : "Unable to hide appointment from dashboard.",
+      );
+    } finally {
+      setConfirmAction(null);
+    }
+  }
+
+  async function runAdminCancelWithOptionalNote() {
+    if (!cancelNoteTargetRef) {
+      return;
+    }
+
+    try {
+      await handleStatusChange(cancelNoteTargetRef, "cancelled", cancelNoteInput);
+      setError(null);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Unable to update appointment status.",
+      );
+    } finally {
+      setCancelNoteTargetRef(null);
+      setCancelNoteInput("");
+    }
+  }
+
+  const confirmationContent =
+    confirmAction?.type === "hide"
+      ? {
+          title: "Hide this request?",
+          description: "This request will be removed from the admin dashboard only.",
+          confirmLabel: "Yes, hide",
+        }
+      : confirmAction?.type === "clearAll"
+      ? {
+          title: "Clear admin history?",
+          description: "Completed, cancelled, and denied requests will be removed from this dashboard.",
+          confirmLabel: "Yes, clear",
+        }
+      : null;
+
   const hasTerminalAppointments = appointments.some((appointment) =>
-    canHideFromHistory(appointment.status),
+    canHideFromDashboard(appointment.status),
   );
 
   return (
-    <main className="w-full">
-      <div className="home-band home-band--canvas">
-        <div className="site-shell flex flex-col gap-8">
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 sm:px-8 lg:px-12">
       <section className="px-1 py-2">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
-              Your visits
+              Admin appointments
             </p>
             <h1 className="mt-3 text-5xl font-semibold tracking-[-0.04em] text-[var(--foreground)]">
-              My appointments
+              Appointment requests
             </h1>
             <p className="mt-3 max-w-3xl text-lg leading-8 text-[var(--muted)]">
-              Review your requests and manage active appointments.
+              Open a request to move it through the workflow and review all details.
             </p>
           </div>
-          {hasTerminalAppointments ? (
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => setConfirmAction({ type: "clearAll" })}
+          <div className="flex items-center gap-2">
+            {hasTerminalAppointments ? (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setConfirmAction({ type: "clearAll" })}
+              >
+                Clear all
+              </button>
+            ) : null}
+            <Link
+              href="/admin"
+              className="rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-4 py-2 text-sm font-semibold text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)]"
             >
-              Clear all
-            </button>
-          ) : null}
-        </div>
-
-        {statusChangeNotifications.length > 0 ? (
-          <div className="mt-5 rounded-[1.25rem] border border-[var(--tone-border-soft)] bg-[var(--surface)] p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--accent)]">
-              Recent status updates
-            </p>
-            <div className="mt-2 space-y-1.5">
-              {statusChangeNotifications.slice(0, 4).map((notification) => (
-                <p key={notification.ref} className="text-sm text-[var(--foreground)]">
-                  <span className="font-semibold">{notification.ref}</span> moved from{" "}
-                  <span className="capitalize">{notification.from}</span> to{" "}
-                  <span className="capitalize">{notification.to}</span> ({notification.dateLabel} at {notification.time})
-                </p>
-              ))}
-            </div>
+              Back to dashboard
+            </Link>
           </div>
-        ) : null}
-      </section>
         </div>
-      </div>
+      </section>
 
-      <div className="home-band home-band--sand">
-        <div className="site-shell flex flex-col gap-8">
       <section className="rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-sm">
-        {isLoading ? (
-          <div className="p-8 text-[var(--muted)]">Loading your appointments...</div>
+        {loading ? (
+          <div className="p-8 text-[var(--muted)]">Loading appointments...</div>
         ) : error ? (
           <div className="p-8 text-[var(--accent-strong)]">{error}</div>
         ) : sortedAppointments.length === 0 ? (
-          <div className="flex flex-col gap-4 p-8">
-            <p className="text-[var(--muted)]">
-              {customerEmail
-                ? "You do not have any appointments yet for this email."
-                : "You have not submitted any appointment requests yet from this device."}
-            </p>
-            <Link
-              className="inline-flex w-fit items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
-              href="/book"
-            >
-              Book an appointment
-            </Link>
-          </div>
+          <div className="p-8 text-[var(--muted)]">No appointment requests have been submitted yet.</div>
         ) : (
           <div className="flex flex-col gap-3">
             {sortedAppointments.map((appointment) => {
-              const canCancel = appointment.status === "pending" || appointment.status === "accepted";
-              const canHide = canHideFromHistory(appointment.status);
-              const showCompactCancelAction = canCancel && !canHide;
+              const nextStatuses = workflowActionOrder.filter(
+                (status) =>
+                  status !== appointment.status &&
+                  canTransitionAppointmentStatus(appointment.status, status),
+              );
 
               return (
                 <details
                   key={appointment.ref}
-                  className={`group overflow-hidden rounded-2xl border shadow-[0_12px_28px_rgba(53,24,22,0.08)] ${statusCardClassMap[appointment.status]}`}
+                  className={`group overflow-hidden rounded-2xl border shadow-[0_12px_28px_var(--card-section-shadow)] ${statusCardClassMap[appointment.status]}`}
                 >
                   <div className={`h-1.5 w-full bg-gradient-to-r ${statusStripeClassMap[appointment.status]}`} />
                   <summary className="relative cursor-pointer list-none px-4 py-4 pr-14 [&::-webkit-details-marker]:hidden">
-                    {canHide ? (
+                    {canHideFromDashboard(appointment.status) ? (
                       <button
                         type="button"
                         className={`${summaryIconButtonClassName} absolute right-3 top-2`}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          setConfirmAction({ type: "delete", ref: appointment.ref });
+                          setConfirmAction({ type: "hide", ref: appointment.ref });
                         }}
-                        aria-label="Hide from history"
-                        title="Hide from history"
+                        aria-label="Hide from dashboard"
+                        title="Hide from dashboard"
                       >
                         <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
                           <path d="M6 6l12 12" />
@@ -348,13 +342,13 @@ export default function MyAppointmentsPage() {
                       </div>
 
                       <div>
-                        <p className="text-base font-semibold text-[var(--foreground)]">{appointment.service}</p>
-                        <p className="mt-1 text-sm text-[var(--muted)]">{appointment.barber}</p>
+                        <p className="text-base font-semibold text-[var(--foreground)]">{appointment.customerName}</p>
+                        <p className="mt-1 text-sm text-[var(--muted)]">{appointment.customerEmail}</p>
                       </div>
 
                       <div>
-                        <p className="text-base font-semibold text-[var(--foreground)]">{appointment.dateLabel}</p>
-                        <p className="mt-1 text-sm text-[var(--muted)]">{appointment.time}</p>
+                        <p className="text-base font-semibold text-[var(--foreground)]">{appointment.service}</p>
+                        <p className="mt-1 text-sm text-[var(--muted)]">{appointment.barber} / {appointment.dateLabel} / {appointment.time}</p>
                       </div>
 
                       <div className="flex items-center justify-end gap-2 md:justify-self-end">
@@ -367,7 +361,7 @@ export default function MyAppointmentsPage() {
                   </summary>
 
                   <div className="border-t border-[var(--border)] bg-[color:rgba(255,255,255,0.42)] px-4 py-4 backdrop-blur-sm">
-                    <div className={`grid gap-4 ${showCompactCancelAction ? "" : "lg:grid-cols-[1.1fr_0.9fr]"}`}>
+                    <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
                       <div className="rounded-2xl border border-[var(--border)] bg-[color:rgba(255,255,255,0.4)] p-4">
                         <h3 className="text-base font-semibold text-[var(--foreground)]">Request details</h3>
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -378,7 +372,7 @@ export default function MyAppointmentsPage() {
                             </p>
                           </div>
                           <div>
-                            <p className="text-xs text-[var(--muted)]">Name</p>
+                            <p className="text-xs text-[var(--muted)]">Customer</p>
                             <p className="mt-1 text-sm font-medium text-[var(--foreground)]">{appointment.customerName}</p>
                           </div>
                           <div>
@@ -398,48 +392,40 @@ export default function MyAppointmentsPage() {
                         </div>
                       </div>
 
-                      {showCompactCancelAction ? (
-                        <div className="rounded-xl border border-[var(--border)] bg-[color:rgba(255,255,255,0.4)] p-3 lg:max-w-xs">
-                          <p className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted)]">Quick action</p>
-                          <div className="mt-2">
-                            <button
-                              type="button"
-                              className={actionButtonClassName}
-                              onClick={() => setConfirmAction({ type: "cancel", ref: appointment.ref })}
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="rounded-2xl border border-[var(--border)] bg-[color:rgba(255,255,255,0.4)] p-4">
-                          <h3 className="text-base font-semibold text-[var(--foreground)]">Actions</h3>
-                          <p className="mt-1 text-xs text-[var(--muted)]">Manage this request and keep your history organized.</p>
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            {canCancel ? (
+                      <div className="rounded-2xl border border-[var(--border)] bg-[color:rgba(255,255,255,0.4)] p-4">
+                        <h3 className="text-base font-semibold text-[var(--foreground)]">Update status</h3>
+                        <p className="mt-1 text-xs text-[var(--muted)]">Requests move forward through workflow, and complete unlocks only after accept.</p>
+                        {nextStatuses.length > 0 ? (
+                          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                            {nextStatuses.map((status) => (
                               <button
+                                key={`${appointment.ref}-${status}`}
                                 type="button"
-                                className={actionButtonClassName}
-                                onClick={() => setConfirmAction({ type: "cancel", ref: appointment.ref })}
+                                className={getWorkflowButtonClass(status, false)}
+                                onClick={() => {
+                                  if (status === "cancelled") {
+                                    setCancelNoteTargetRef(appointment.ref);
+                                    setCancelNoteInput("");
+                                    return;
+                                  }
+
+                                  void handleStatusChange(appointment.ref, status).catch((requestError) => {
+                                    setError(
+                                      requestError instanceof Error
+                                        ? requestError.message
+                                        : "Unable to update appointment status.",
+                                    );
+                                  });
+                                }}
                               >
-                                Cancel
+                                {formatStatusAction(status)}
                               </button>
-                            ) : null}
-                            {canHide ? (
-                              <Link
-                                href={`/book?date=${encodeURIComponent(
-                                  appointment.dateIso,
-                                )}&service=${encodeURIComponent(appointment.service)}&barber=${encodeURIComponent(
-                                  appointment.barber,
-                                )}&time=${encodeURIComponent(appointment.time)}`}
-                                className={actionButtonClassName}
-                              >
-                                Book again
-                              </Link>
-                            ) : null}
+                            ))}
                           </div>
-                        </div>
-                      )}
+                        ) : (
+                          <p className="mt-3 text-xs text-[var(--muted)]">No status actions available for this request.</p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </details>
@@ -448,8 +434,6 @@ export default function MyAppointmentsPage() {
           </div>
         )}
       </section>
-        </div>
-      </div>
 
       {confirmationContent ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:rgba(26,12,12,0.52)] p-4">
@@ -479,6 +463,49 @@ export default function MyAppointmentsPage() {
                 }}
               >
                 {confirmationContent.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {cancelNoteTargetRef ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:rgba(26,12,12,0.52)] p-4">
+          <div className="w-full max-w-lg rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-[0_24px_60px_rgba(26,12,12,0.35)]">
+            <p className="text-sm font-medium uppercase tracking-[0.2em] text-[var(--accent)]">
+              Optional note
+            </p>
+            <h2 className="mt-3 text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">
+              Add a cancellation note?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
+              Add an optional reason for why this appointment is being cancelled.
+            </p>
+            <textarea
+              className="mt-4 min-h-28 w-full rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] px-4 py-3 text-[var(--foreground)] outline-none transition focus:border-[var(--accent-strong)]"
+              value={cancelNoteInput}
+              onChange={(event) => setCancelNoteInput(event.target.value)}
+              placeholder="Optional note"
+            />
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center justify-center rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-4 py-2 text-sm font-semibold text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)]"
+                onClick={() => {
+                  setCancelNoteTargetRef(null);
+                  setCancelNoteInput("");
+                }}
+              >
+                Keep request
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-4 py-2 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
+                onClick={() => {
+                  void runAdminCancelWithOptionalNote();
+                }}
+              >
+                Cancel request
               </button>
             </div>
           </div>

@@ -8,10 +8,15 @@ import {
 } from "@/lib/appointments/appointment.types";
 
 const statusOptions: AppointmentStatus[] = ["pending", "accepted", "denied", "completed"];
+const statusActionOptions: AppointmentStatus[] = ["pending", "accepted", "cancelled", "completed"];
 const OWNER_TOKEN_STORAGE_KEY = "cutting_edge_owner_token";
 
 const actionButtonClassName =
-  "rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)]";
+  "btn btn-secondary btn-compact";
+
+function canHideFromOwner(status: AppointmentStatus) {
+  return status === "completed" || status === "denied" || status === "cancelled";
+}
 
 function getStoredOwnerToken() {
   if (typeof window === "undefined") {
@@ -105,7 +110,7 @@ export default function OwnerAppointmentsPage() {
       // no-op
     }
 
-  setOwnerTokenInput("");
+    setOwnerTokenInput("");
     setOwnerToken("");
     setAppointments([]);
     setError(null);
@@ -140,6 +145,30 @@ export default function OwnerAppointmentsPage() {
     );
   }
 
+  async function handleHideFromOwner(ref: string) {
+    const response = await fetch(`/api/appointments/${encodeURIComponent(ref)}`, {
+      method: "DELETE",
+      headers: {
+        "x-owner-token": ownerToken.trim(),
+      },
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(
+        payload && typeof payload === "object" && "error" in payload
+          ? String(payload.error)
+          : "Unable to remove appointment from the owner dashboard.",
+      );
+    }
+
+    setError(null);
+    setAppointments((currentAppointments) =>
+      currentAppointments.filter((appointment) => appointment.ref !== ref),
+    );
+  }
+
   const groupedCounts = useMemo(() => {
     return statusOptions.reduce(
       (counts, status) => ({
@@ -152,7 +181,7 @@ export default function OwnerAppointmentsPage() {
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 sm:px-8 lg:px-12">
-      <section className="rounded-[2rem] border border-[var(--border)] bg-[color:rgba(248,237,220,0.92)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.12)]">
+      <section className="rounded-[2rem] border border-[var(--border)] bg-[var(--section-warm-bg)] p-8 shadow-[0_24px_80px_var(--section-warm-shadow)]">
         <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
           Owner review
         </p>
@@ -160,7 +189,7 @@ export default function OwnerAppointmentsPage() {
           Review incoming appointment requests
         </h1>
         <p className="mt-3 max-w-3xl text-lg leading-8 text-[var(--muted)]">
-          This table stores customer appointment requests and lets the owner move them through the workflow: pending, accepted, denied, and completed.
+          This table stores customer appointment requests and lets the owner move them through the workflow: pending, accepted, cancelled, and completed.
         </p>
         <div className="mt-6 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-sm">
           <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
@@ -248,7 +277,7 @@ export default function OwnerAppointmentsPage() {
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex flex-wrap gap-2">
-                        {statusOptions
+                        {statusActionOptions
                           .filter((status) => canTransitionAppointmentStatus(appointment.status, status))
                           .map((status) => (
                             <button
@@ -268,6 +297,23 @@ export default function OwnerAppointmentsPage() {
                               {status}
                             </button>
                           ))}
+                        {canHideFromOwner(appointment.status) ? (
+                          <button
+                            className={actionButtonClassName}
+                            type="button"
+                            onClick={() => {
+                              void handleHideFromOwner(appointment.ref).catch((requestError) => {
+                                setError(
+                                  requestError instanceof Error
+                                    ? requestError.message
+                                    : "Unable to remove appointment from the owner dashboard.",
+                                );
+                              });
+                            }}
+                          >
+                            Remove from dashboard
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>

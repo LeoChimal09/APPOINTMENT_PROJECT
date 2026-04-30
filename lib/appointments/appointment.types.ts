@@ -34,9 +34,13 @@ export function canTransitionAppointmentStatus(
 
   switch (currentStatus) {
     case "pending":
-      return nextStatus === "accepted" || nextStatus === "denied";
+      return (
+        nextStatus === "accepted" ||
+        nextStatus === "denied" ||
+        nextStatus === "cancelled"
+      );
     case "accepted":
-      return nextStatus === "completed";
+      return nextStatus === "completed" || nextStatus === "cancelled";
     case "denied":
     case "completed":
       return false;

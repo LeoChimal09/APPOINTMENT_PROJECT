@@ -34,6 +34,61 @@ Notes:
 - `OWNER_DASHBOARD_TOKEN` protects owner-only appointment endpoints.
 - Do not commit real env files or secrets.
 
+You can start from `.env.example`.
+
+## Local MySQL with Docker
+
+This repo includes a local MySQL container for development and DBeaver access.
+
+Start MySQL:
+
+```bash
+npm run db:up
+```
+
+Stop MySQL:
+
+```bash
+npm run db:down
+```
+
+The container listens on `127.0.0.1:3308` by default and initializes the `appointments` table automatically on first startup from [docker/mysql/init/01-create-appointments.sql](docker/mysql/init/01-create-appointments.sql).
+
+Docker setup files:
+
+- [docker-compose.yml](docker-compose.yml)
+- [docker/mysql/init/01-create-appointments.sql](docker/mysql/init/01-create-appointments.sql)
+- [.env.example](.env.example)
+
+## DBeaver Connection
+
+Use these values in DBeaver:
+
+- Host: `127.0.0.1`
+- Port: `3308`
+- Database: `appointmentproject`
+- Username: `appointmentproject`
+- Password: `appointmentproject`
+
+Or use your overridden values from `.env.local` if you changed them.
+
+## Drizzle and Schema Sync
+
+The Docker init SQL creates the initial `appointments` table so the app can run immediately.
+
+After you change the Drizzle schema in [server/db/schema.ts](server/db/schema.ts), sync the database with:
+
+```bash
+npm run db:push
+```
+
+If you want a fresh local database after changing init SQL:
+
+```bash
+docker compose down -v
+npm run db:up
+```
+
 ## Getting Started
 
 Install dependencies:
@@ -58,6 +113,9 @@ npm run build
 npm run lint
 npm run typecheck
 npm run check
+npm run db:up
+npm run db:down
+npm run db:push
 npm run test:run
 npm run security:staged
 ```
