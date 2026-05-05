@@ -4,6 +4,7 @@ export const appointmentStatusValues = [
   "denied",
   "cancelled",
   "completed",
+  "expired",
 ] as const;
 
 export type AppointmentStatus = (typeof appointmentStatusValues)[number];
@@ -37,7 +38,8 @@ export function canTransitionAppointmentStatus(
       return (
         nextStatus === "accepted" ||
         nextStatus === "denied" ||
-        nextStatus === "cancelled"
+        nextStatus === "cancelled" ||
+        nextStatus === "expired"
       );
     case "accepted":
       return nextStatus === "completed" || nextStatus === "cancelled";

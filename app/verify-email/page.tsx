@@ -66,14 +66,16 @@ function VerifyEmailInner() {
   }, [searchParams]);
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col items-center justify-center gap-8 px-6 py-16 sm:px-8 lg:px-12">
-      <section className="w-full max-w-md rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
-        <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
-          Signing in
-        </p>
-        <h1 className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">
-          Verify your email
-        </h1>
+    <div className="admin-page">
+      <section className="admin-section admin-section--primary">
+        <div className="site-shell flex min-h-[70vh] items-center justify-center">
+          <div className="w-full max-w-md rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
+            <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
+              Signing in
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">
+              Verify your email
+            </h1>
 
         <div className="mt-6">
           {status === "loading" && (
@@ -104,8 +106,10 @@ function VerifyEmailInner() {
             Back to home
           </Link>
         </div>
+          </div>
+        </div>
       </section>
-    </main>
+    </div>
   );
 }
 
@@ -113,9 +117,9 @@ export default function VerifyEmailPage() {
   return (
     <Suspense
       fallback={
-        <main className="flex min-h-screen items-center justify-center text-[var(--muted)]">
+        <div className="admin-page flex min-h-screen items-center justify-center text-[var(--muted)]">
           Loading…
-        </main>
+        </div>
       }
     >
       <VerifyEmailInner />

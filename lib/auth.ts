@@ -6,7 +6,7 @@ import GoogleProvider from "next-auth/providers/google";
 import CredentialsProvider from "next-auth/providers/credentials";
 import { consumeEmailVerificationToken } from "@/server/repositories/email-verification-repository";
 import { getCustomerByEmail, createCustomer } from "@/server/repositories/customers-repository";
-import { isRateLimited, getRemainingAttempts } from "@/lib/rate-limiter";
+import { checkRateLimit } from "@/lib/rate-limiter";
 
 function getAdminEmails() {
   return (process.env.ADMIN_EMAILS ?? "")
@@ -65,14 +65,18 @@ export const authOptions: NextAuthOptions = {
         const email = (credentials?.email ?? "").trim().toLowerCase();
         if (!email) return null;
 
+        if (isAdminEmail(email)) {
+          throw new Error("ADMIN_GOOGLE_REQUIRED");
+        }
+
         const rateLimitKey = `auth:${email}`;
         const rateLimit = Math.max(1, Number(process.env.AUTH_RATE_LIMIT_ATTEMPTS ?? "10"));
         const rateWindowMs =
           Math.max(1, Number(process.env.AUTH_RATE_LIMIT_WINDOW_SECONDS ?? "60")) * 1000;
 
-        if (isRateLimited(rateLimitKey, rateLimit, rateWindowMs)) {
-          const remaining = getRemainingAttempts(rateLimitKey, rateLimit);
-          throw new Error(`RATE_LIMITED:${remaining}`);
+        const rateLimitResult = await checkRateLimit(rateLimitKey, rateLimit, rateWindowMs);
+        if (rateLimitResult.limited) {
+          throw new Error(`RATE_LIMITED:${rateLimitResult.remaining}`);
         }
 
         const verificationToken = (credentials?.verificationToken ?? "").trim();
@@ -111,10 +115,14 @@ export const authOptions: NextAuthOptions = {
   ],
   callbacks: {
     async signIn({ user, account }) {
-      // For Google OAuth, ensure the customer record exists.
       if (account?.provider === "google") {
         const email = user.email?.trim().toLowerCase();
         if (!email) return false;
+
+        // Admin accounts must use Google, while non-admin users should use email links.
+        if (!isAdminEmail(email)) {
+          return false;
+        }
 
         let customer = await getCustomerByEmail(email);
         if (!customer) {
@@ -122,6 +130,13 @@ export const authOptions: NextAuthOptions = {
         }
 
         return !!customer;
+      }
+
+      if (account?.provider === "credentials") {
+        const email = user.email?.trim().toLowerCase();
+        if (email && isAdminEmail(email)) {
+          return false;
+        }
       }
 
       return true;

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "crypto";
 import { NextResponse } from "next/server";
-import { isRateLimited } from "@/lib/rate-limiter";
+import { checkRateLimit, mergeRateLimitHeaders } from "@/lib/rate-limiter";
 import { sendSignInLinkEmail, getAppBaseUrl } from "@/lib/mailer";
+import { isAdminEmail } from "@/lib/auth";
 import {
   createEmailVerificationToken,
   deleteExpiredEmailVerificationTokens,
@@ -28,21 +29,32 @@ export async function POST(request: Request) {
     );
   }
 
+  if (isAdminEmail(email)) {
+    return NextResponse.json(
+      { error: "Admin accounts must sign in with Google." },
+      { status: 403 },
+    );
+  }
+
   const ip =
     request.headers.get("x-forwarded-for") ??
     request.headers.get("x-real-ip") ??
     "unknown";
 
-  const emailKey = `magic-link:email:${email}`;
-  const ipKey = `magic-link:ip:${ip}`;
+  const emailKey = `rl:auth:request-link:email:${email}`;
+  const ipKey = `rl:auth:request-link:ip:${ip}`;
+  const [emailRateLimit, ipRateLimit] = await Promise.all([
+    checkRateLimit(emailKey, 3, 60 * 1000),
+    checkRateLimit(ipKey, 20, 60 * 1000),
+  ]);
 
-  if (
-    isRateLimited(emailKey, 3, 60 * 1000) ||
-    isRateLimited(ipKey, 20, 60 * 1000)
-  ) {
+  if (emailRateLimit.limited || ipRateLimit.limited) {
     return NextResponse.json(
       { error: "Too many requests. Please wait a minute and try again." },
-      { status: 429 },
+      {
+        status: 429,
+        headers: mergeRateLimitHeaders([emailRateLimit, ipRateLimit]),
+      },
     );
   }
 

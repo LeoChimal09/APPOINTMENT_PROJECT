@@ -3,6 +3,14 @@ import { timingSafeEqual } from "crypto";
 import { getToken } from "next-auth/jwt";
 import { isAdminEmail } from "@/lib/auth";
 
+function isLegacyOwnerTokenAuthEnabled() {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+
+  return process.env.ALLOW_LEGACY_OWNER_TOKEN_AUTH === "true";
+}
+
 function getConfiguredOwnerToken() {
   const token = process.env.OWNER_DASHBOARD_TOKEN?.trim();
   return token && token.length > 0 ? token : null;
@@ -40,7 +48,12 @@ export async function isOwnerAuthorized(request: NextRequest) {
     return true;
   }
 
-  // Legacy fallback for non-OAuth flows still using OWNER_DASHBOARD_TOKEN.
+  // Legacy owner-token auth is available only in non-production and only
+  // when explicitly enabled.
+  if (!isLegacyOwnerTokenAuthEnabled()) {
+    return false;
+  }
+
   const configuredToken = getConfiguredOwnerToken();
   if (!configuredToken) {
     return false;

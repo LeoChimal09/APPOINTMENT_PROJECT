@@ -37,25 +37,29 @@ export default async function ConfirmationPage({ searchParams }: ConfirmationPag
 
   if (!rawDate || !requestedService || !requestedBarber || !requestedTime) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col items-start gap-6 px-6 py-8 sm:px-8 lg:px-12">
-        <section className="w-full rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
-          <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
-            Booking confirmation
-          </p>
-          <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">
-            Select your booking details first
-          </h1>
-          <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-            Confirmation requires a selected date, service, barber, and time. Please return to booking and choose your options.
-          </p>
-          <Link
-            href="/book"
-            className="mt-6 inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
-          >
-            Go to booking
-          </Link>
+      <div className="admin-page">
+        <section className="admin-section admin-section--primary">
+          <div className="site-shell flex min-h-[70vh] items-center justify-center">
+            <div className="w-full max-w-4xl rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
+              <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
+                Booking confirmation
+              </p>
+              <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">
+                Select your booking details first
+              </h1>
+              <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
+                Confirmation requires a selected date, service, barber, and time. Please return to booking and choose your options.
+              </p>
+              <Link
+                href="/book"
+                className="mt-6 inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
+              >
+                Go to booking
+              </Link>
+            </div>
+          </div>
         </section>
-      </main>
+      </div>
     );
   }
 
@@ -64,25 +68,29 @@ export default async function ConfirmationPage({ searchParams }: ConfirmationPag
 
   if (Number.isNaN(parsedDate.getTime()) || normalizedHour === null) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col items-start gap-6 px-6 py-8 sm:px-8 lg:px-12">
-        <section className="w-full rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
-          <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
-            Booking confirmation
-          </p>
-          <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">
-            Invalid booking details
-          </h1>
-          <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
-            The selected booking details are not valid. Please return to booking and select a valid date and time.
-          </p>
-          <Link
-            href="/book"
-            className="mt-6 inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
-          >
-            Go to booking
-          </Link>
+      <div className="admin-page">
+        <section className="admin-section admin-section--primary">
+          <div className="site-shell flex min-h-[70vh] items-center justify-center">
+            <div className="w-full max-w-4xl rounded-[2rem] border border-[var(--border)] bg-[color:var(--surface-elevated)] p-8 shadow-[0_24px_80px_var(--shadow-elevated)]">
+              <p className="text-sm font-medium uppercase tracking-[0.22em] text-[var(--accent)]">
+                Booking confirmation
+              </p>
+              <h1 className="mt-3 text-4xl font-semibold tracking-[-0.03em] text-[var(--foreground)]">
+                Invalid booking details
+              </h1>
+              <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--muted)]">
+                The selected booking details are not valid. Please return to booking and select a valid date and time.
+              </p>
+              <Link
+                href="/book"
+                className="mt-6 inline-flex items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
+              >
+                Go to booking
+              </Link>
+            </div>
+          </div>
         </section>
-      </main>
+      </div>
     );
   }
 

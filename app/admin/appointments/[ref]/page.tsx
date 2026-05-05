@@ -17,6 +17,7 @@ const statusPillClassMap: Record<AppointmentStatus, string> = {
   denied: "bg-[var(--status-denied-bg)] text-[var(--status-denied-text)] border border-[var(--status-denied-border)]",
   cancelled: "bg-[var(--status-cancelled-bg)] text-[var(--status-cancelled-text)] border border-[var(--status-cancelled-border)]",
   completed: "bg-[var(--surface-soft)] text-[var(--muted)] border border-[var(--border)]",
+  expired: "bg-[var(--status-cancelled-bg)] text-[var(--status-cancelled-text)] border border-[var(--status-cancelled-border)]",
 };
 
 function formatStatusAction(status: AppointmentStatus) {

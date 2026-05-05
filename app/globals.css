@@ -110,6 +110,7 @@
   --overlay-section-hover: rgba(143, 158, 181, 0.14);
   --overlay-section-text: rgba(196, 204, 219, 0.86);
   --disabled-section-bg: rgba(239, 223, 198, 0.45);
+  --panel-text-primary: #ffffff;
 }
 
 body {
@@ -286,4 +287,56 @@ a {
 
 * {
   box-sizing: border-box;
+}
+
+/* React DayPicker theme customization */
+.rdp {
+  --rdp-accent-color: var(--accent-strong);
+  --rdp-background-color: var(--surface-soft);
+}
+
+.rdp-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 0.5rem;
+}
+
+.rdp-head_cell {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.rdp-cell {
+  text-align: center;
+  padding: 0;
+}
+
+.rdp-day {
+  border-radius: 0.5rem;
+  color: var(--foreground);
+  transition: all 0.2s ease;
+}
+
+.rdp-day:hover:not([disabled]):not(.rdp-day_selected) {
+  background-color: var(--surface-soft);
+  border-color: var(--border);
+}
+
+.rdp-day_selected {
+  background-color: var(--accent-strong);
+  color: white;
+  font-weight: 600;
+}
+
+.rdp-day_today {
+  font-weight: 700;
+  color: var(--accent-strong);
+  border: 1px solid var(--accent-strong);
+}
+
+.rdp-day_disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: not-allowed;
 }

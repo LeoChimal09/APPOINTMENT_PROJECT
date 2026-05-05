@@ -12,5 +12,9 @@ export default async function AdminLayout({
     redirect("/");
   }
 
-  return children;
+  return (
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_center,rgba(255,255,255,0.22),transparent_34%),linear-gradient(180deg,#efefef_0%,var(--section-sand)_100%)]">
+      {children}
+    </div>
+  );
 }

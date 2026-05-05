@@ -4,11 +4,12 @@ Customer-facing barber booking experience built with Next.js App Router, React, 
 
 ## Features
 
-- Customer home page with upcoming-visit summary
-- Booking flow with date, barber, service, and time selection
-- Confirmation flow with persisted draft contact info
-- Customer appointments page with cancel, delete history, and book-again actions
-- Owner appointments dashboard with status management
+- Customer home page with upcoming-visit summary and live staff/team cards
+- Booking flow with date, barber, service, and time selection based on staff + building hours
+- Confirmation flow with persisted draft contact info and guest-mode support
+- Customer appointments page with status filters, cancel, clear history, and book-again actions
+- Admin dashboard with hover quick-links (Appointments and Staff)
+- Admin staff management for roster, weekly schedules, overrides, and building hours
 - API-backed appointment persistence via MySQL + Drizzle
 
 ## Tech Stack
@@ -97,6 +98,12 @@ Install dependencies:
 npm install
 ```
 
+If you use Bun in this project, you can also run:
+
+```bash
+bun install
+```
+
 Run the app:
 
 ```bash
@@ -158,6 +165,13 @@ npm run check
 npm run security:staged
 ```
 
+If you use Bun, equivalent checks are:
+
+```bash
+bun run check
+bun run security:staged
+```
+
 ## Current Product Gaps
 
 These are not all security issues, but they are important before production:
@@ -166,6 +180,14 @@ These are not all security issues, but they are important before production:
 - Owner access currently uses a shared token, not full user auth.
 - Some customer pages still read local browser data for UI convenience, which can drift from server data.
 - Rate limiting and audit logging are not implemented yet.
+
+## Risk Checklist Before Commit
+
+- Ensure no local env files are staged (`.env.local`, `.env.development.local`, etc.)
+- Run type and lint checks (`npm run check` or `bun run check`)
+- Run staged secret scan (`npm run security:staged` or `bun run security:staged`)
+- Verify owner-only routes still enforce authorization for admin actions
+- Confirm booking and availability flows behave correctly for both signed-in and guest users
 
 ## Deployment
 

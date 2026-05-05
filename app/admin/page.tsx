@@ -9,18 +9,18 @@ const modules = [
     status: "Live",
   },
   {
-    name: "Billing",
-    description: "Revenue and payment tools for the shop.",
-    href: null,
-    cta: null,
-    status: "Planned",
+    name: "Staff",
+    description: "Manage staff members and their availability.",
+    href: "/admin/staff",
+    cta: "Manage staff",
+    status: "Live",
   },
   {
-    name: "Reports",
-    description: "Operational metrics and performance analytics.",
-    href: null,
-    cta: null,
-    status: "Planned",
+    name: "Building",
+    description: "Set operating hours and business settings.",
+    href: "/admin/staff?tab=building",
+    cta: "Manage building hours",
+    status: "Live",
   },
 ];
 

@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import type { AppointmentRecord } from "@/lib/appointments/appointment.types";
 import { normalizeCustomerEmail, setStoredCustomerEmail } from "@/lib/appointments/customer-session";
+import { upsertStoredGuestAppointment } from "@/lib/appointments/guest-appointments";
 
 const CONFIRMATION_DRAFT_PREFIX = "cutting_edge_confirmation_draft";
 
@@ -88,6 +90,7 @@ function getConfirmationDraft(appointment: Appointment) {
 }
 
 export function BookingConfirmationClient({ appointment, isPastSelection }: BookingConfirmationClientProps) {
+  const { data: session } = useSession();
   const router = useRouter();
   const confirmationDraftKey = getConfirmationDraftKey(appointment);
   const initialDraft = getConfirmationDraft(appointment);
@@ -104,6 +107,10 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
   const [isExactDateTimeConflict, setIsExactDateTimeConflict] = useState(false);
   const [conflictChoice, setConflictChoice] = useState<"pending" | "resolved" | null>(null);
   const [isConflictModalOpen, setIsConflictModalOpen] = useState(false);
+  const sessionEmail = session?.user?.email?.trim().toLowerCase() ?? "";
+  const isSignedIn = sessionEmail !== "";
+  const resolvedFullName = fullName.trim() || session?.user?.name?.trim() || "";
+  const resolvedEmailInput = isSignedIn ? sessionEmail : email.trim();
 
   useEffect(() => {
     try {
@@ -122,12 +129,11 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
   }, [confirmationDraftKey, fullName, email, phone, notes]);
 
   async function getActiveSameDayAppointment() {
-    const normalizedEmail = normalizeCustomerEmail(email);
-    if (!normalizedEmail) {
+    if (!isSignedIn) {
       return null;
     }
 
-    const response = await fetch(`/api/appointments?email=${encodeURIComponent(normalizedEmail)}`, {
+    const response = await fetch("/api/appointments", {
       cache: "no-store",
     });
 
@@ -153,7 +159,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
       return;
     }
 
-    const normalizedEmail = normalizeCustomerEmail(email);
+    const normalizedEmail = isSignedIn ? sessionEmail : normalizeCustomerEmail(email);
 
     setIsSubmitting(true);
     setSubmitError(null);
@@ -171,7 +177,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
           dateIso: appointment.dateIso,
           dateLabel: appointment.date,
           time: appointment.time,
-          customerName: fullName.trim(),
+          customerName: resolvedFullName,
           customerEmail: normalizedEmail,
           customerPhone: phone.trim(),
           notes: notes.trim() || null,
@@ -190,6 +196,9 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
 
       const overwrittenAppointment = payload as AppointmentRecord;
       setStoredCustomerEmail(normalizedEmail);
+      if (!isSignedIn) {
+        upsertStoredGuestAppointment(overwrittenAppointment);
+      }
       setAppointmentRef(overwrittenAppointment.ref);
       setSubmitSuccess(true);
       setConflictChoice("resolved");
@@ -215,8 +224,8 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
   }
 
   const canSubmit =
-    fullName.trim() !== "" &&
-    email.trim() !== "" &&
+    resolvedFullName !== "" &&
+    resolvedEmailInput !== "" &&
     phone.trim() !== "" &&
     !isPastSelection;
 
@@ -225,7 +234,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
       return;
     }
 
-    const normalizedEmail = normalizeCustomerEmail(email);
+    const normalizedEmail = sessionEmail || normalizeCustomerEmail(email);
 
     if (!shouldOverwriteExisting) {
       const activeSameDay = await getActiveSameDayAppointment();
@@ -256,7 +265,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
           dateIso: appointment.dateIso,
           dateLabel: appointment.date,
           time: appointment.time,
-          customerName: fullName.trim(),
+          customerName: resolvedFullName,
           customerEmail: normalizedEmail,
           customerPhone: phone.trim(),
           notes: notes.trim() || null,
@@ -274,6 +283,9 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
 
       const createdAppointment = payload as AppointmentRecord;
       setStoredCustomerEmail(normalizedEmail);
+      if (!isSignedIn) {
+        upsertStoredGuestAppointment(createdAppointment);
+      }
       setAppointmentRef(createdAppointment.ref);
       setSubmitSuccess(true);
       localStorage.removeItem(confirmationDraftKey);
@@ -360,7 +372,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
           <section className="grid gap-8 md:grid-cols-[1.05fr_0.95fr] md:items-start">
 
         <div className="space-y-6">
-          <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-6 shadow-sm">
+          <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm">
             <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
               Contact details
             </p>
@@ -382,7 +394,7 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
                   type="text"
                   value={fullName}
                   onChange={(event) => setFullName(event.target.value)}
-                  placeholder="Jordan Carter"
+                  placeholder={session?.user?.name || "Jordan Carter"}
                   required
                   aria-required="true"
                 />
@@ -392,12 +404,18 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
                 <input
                   className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] px-4 py-3 text-[var(--foreground)] outline-none transition focus:border-[var(--accent-strong)]"
                   type="email"
-                  value={email}
+                  value={isSignedIn ? sessionEmail : email}
+                  disabled={isSignedIn}
                   onChange={(event) => setEmail(event.target.value)}
                   placeholder="jordan@example.com"
                   required
                   aria-required="true"
                 />
+                {isSignedIn ? (
+                  <span className="text-xs text-[var(--muted)]">
+                    Using your signed-in email address.
+                  </span>
+                ) : null}
               </label>
               <label className="flex flex-col gap-2 sm:col-span-2">
                 <span className="text-sm font-medium text-[var(--accent)]">Phone number *</span>
@@ -455,49 +473,49 @@ export function BookingConfirmationClient({ appointment, isPastSelection }: Book
           ) : null}
         </div>
 
-        <aside className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface-elevated)] p-6 shadow-sm">
-          <p className="text-sm uppercase tracking-[0.3em] text-[var(--accent)]">
+        <aside className="rounded-[1.75rem] bg-[radial-gradient(circle_at_top,var(--panel-radial-accent),transparent_56%),linear-gradient(135deg,var(--panel),var(--panel-end))] p-6 text-[var(--surface)] shadow-inner">
+          <p className="text-sm uppercase tracking-[0.3em] text-[var(--panel-highlight)]">
             Request summary
           </p>
-          <div className="mt-5 space-y-3 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--surface-soft)] px-4 py-3">
-              <span className="text-sm text-[var(--muted)]">Appointment</span>
-              <span className="text-sm font-medium text-[var(--foreground)]">{appointment.service}</span>
+          <div className="mt-5 space-y-3 rounded-[1.5rem] border border-[var(--panel-border-warm)] bg-[var(--panel-card)] p-4">
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
+              <span className="text-sm text-[var(--panel-text-muted)]">Appointment</span>
+              <span className="text-sm font-medium text-[var(--surface)]">{appointment.service}</span>
             </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--surface-soft)] px-4 py-3">
-              <span className="text-sm text-[var(--muted)]">Assigned barber</span>
-              <span className="text-sm font-medium text-[var(--foreground)]">{appointment.barber}</span>
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
+              <span className="text-sm text-[var(--panel-text-muted)]">Assigned barber</span>
+              <span className="text-sm font-medium text-[var(--surface)]">{appointment.barber}</span>
             </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--surface-soft)] px-4 py-3">
-              <span className="text-sm text-[var(--muted)]">Requested slot</span>
-              <span className="text-sm font-medium text-[var(--accent)]">{appointment.time}</span>
+            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
+              <span className="text-sm text-[var(--panel-text-muted)]">Requested slot</span>
+              <span className="text-sm font-medium text-[var(--panel-highlight)]">{appointment.time}</span>
             </div>
-            <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
-              <p className="text-sm text-[var(--muted)]">Contact</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
-                {fullName || "Waiting for your contact details"}
+            <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
+              <p className="text-sm text-[var(--panel-text-muted)]">Contact</p>
+              <p className="mt-2 text-lg font-semibold text-[var(--surface)]">
+                {resolvedFullName || "Waiting for your contact details"}
               </p>
-              <p className="mt-2 text-sm text-[var(--muted)]">{email || "No email added yet"}</p>
-              <p className="mt-1 text-sm text-[var(--muted)]">{phone || "No phone number added yet"}</p>
+              <p className="mt-2 text-sm text-[var(--panel-text-muted)]">{(isSignedIn ? sessionEmail : email) || "No email added yet"}</p>
+              <p className="mt-1 text-sm text-[var(--panel-text-muted)]">{phone || "No phone number added yet"}</p>
             </div>
             {notes ? (
-              <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
-                <p className="text-sm text-[var(--muted)]">Notes</p>
-                <p className="mt-2 text-sm leading-7 text-[var(--foreground)]">{notes}</p>
+              <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
+                <p className="text-sm text-[var(--panel-text-muted)]">Notes</p>
+                <p className="mt-2 text-sm leading-7 text-[var(--surface)]">{notes}</p>
               </div>
             ) : null}
-            <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
-              <p className="text-sm text-[var(--muted)]">Reference</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+            <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
+              <p className="text-sm text-[var(--panel-text-muted)]">Reference</p>
+              <p className="mt-2 text-lg font-semibold text-[var(--surface)]">
                 {appointmentRef ?? "Will be generated when the request is sent"}
               </p>
             </div>
-            <div className="rounded-2xl bg-[var(--surface-soft)] px-4 py-4">
-              <p className="text-sm text-[var(--muted)]">Status</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
+            <div className="rounded-2xl bg-[var(--panel-card-strong)] px-4 py-4">
+              <p className="text-sm text-[var(--panel-text-muted)]">Status</p>
+              <p className="mt-2 text-lg font-semibold text-[var(--surface)]">
                 {isPastSelection ? "Past time selected" : "Waiting for your confirmation"}
               </p>
-              <p className="mt-2 text-sm leading-7 text-[var(--muted)]">
+              <p className="mt-2 text-sm leading-7 text-[var(--panel-text-muted)]">
                 {isPastSelection
                   ? "This slot is no longer valid. Return to the booking page and choose a future day and time."
                   : "Confirm the details on the left, add your contact info, and submit the request when you are ready."}

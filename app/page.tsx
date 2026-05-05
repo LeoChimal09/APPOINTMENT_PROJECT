@@ -2,16 +2,23 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { useSession } from "next-auth/react";
 import { FaFacebookF, FaInstagram, FaTiktok } from "react-icons/fa6";
 import { FiClock, FiMapPin, FiNavigation, FiPhone } from "react-icons/fi";
 import type { AppointmentRecord, AppointmentStatus } from "@/lib/appointments/appointment.types";
-import { getStoredCustomerEmail } from "@/lib/appointments/customer-session";
 import {
   syncAppointmentStatusChangeNotifications,
   type AppointmentStatusChangeNotification,
 } from "@/lib/appointments/status-notifications";
 
-const appointmentsByEmailRequestCache = new Map<string, Promise<AppointmentRecord[]>>();
+type BuildingHoursEntry = {
+  weekday: number;
+  isOpen: boolean;
+  startTime: string;
+  endTime: string;
+};
+
+let appointmentsRequestCache: Promise<AppointmentRecord[]> | null = null;
 
 const statusColorMap: Record<AppointmentStatus, string> = {
   pending: "text-[var(--panel-highlight)]",
@@ -19,6 +26,7 @@ const statusColorMap: Record<AppointmentStatus, string> = {
   denied: "text-[var(--panel-text-muted)]",
   cancelled: "text-[var(--panel-text-muted)]",
   completed: "text-[var(--panel-text-muted)]",
+  expired: "text-[var(--panel-text-muted)]",
 };
 
 const services = [
@@ -39,7 +47,14 @@ const services = [
   },
 ];
 
-const barbers = [
+type TeamBarberCard = {
+  title: string;
+  description: string;
+  specialties: string[];
+  time: string;
+};
+
+const defaultBarberCards: TeamBarberCard[] = [
   {
     title: "Luis",
     description: "Skin fades, textured crops, beard shaping",
@@ -134,6 +149,8 @@ const aboutPanels = {
   },
 } as const;
 
+const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as const;
+
 const [featuredTestimonial, ...supportingTestimonials] = testimonials;
 
 function parseHourFromLabel(timeLabel: string) {
@@ -173,16 +190,42 @@ function getAppointmentTimestamp(appointment: AppointmentRecord) {
   ).getTime();
 }
 
-async function fetchAppointmentsByEmail(email: string) {
-  const normalizedEmail = email.trim().toLowerCase();
-  const cachedRequest = appointmentsByEmailRequestCache.get(normalizedEmail);
+function formatHourLabel(hour24: number) {
+  const normalizedHour = ((hour24 % 24) + 24) % 24;
+  const suffix = normalizedHour >= 12 ? "PM" : "AM";
+  const hour12 = normalizedHour % 12 === 0 ? 12 : normalizedHour % 12;
+  return `${hour12}:00 ${suffix}`;
+}
 
-  if (cachedRequest) {
-    return cachedRequest;
+function formatCompactTimeLabel(timeLabel: string) {
+  return timeLabel.replace(":00 ", " ").trim();
+}
+
+function toLocalDateIso(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function getSlotTimestampForDateIso(dateIso: string, hour24: number) {
+  const match = dateIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+
+  const [, rawYear, rawMonth, rawDay] = match;
+  const year = Number.parseInt(rawYear, 10);
+  const month = Number.parseInt(rawMonth, 10);
+  const day = Number.parseInt(rawDay, 10);
+
+  return new Date(year, month - 1, day, hour24, 0, 0, 0).getTime();
+}
+
+async function fetchSignedInAppointments() {
+  if (appointmentsRequestCache) {
+    return appointmentsRequestCache;
   }
 
   const request = (async () => {
-    const response = await fetch(`/api/appointments?email=${encodeURIComponent(normalizedEmail)}`, {
+    const response = await fetch("/api/appointments", {
       cache: "no-store",
     });
 
@@ -193,19 +236,30 @@ async function fetchAppointmentsByEmail(email: string) {
     const payload = (await response.json()) as AppointmentRecord[];
     return Array.isArray(payload) ? payload : [];
   })().finally(() => {
-    appointmentsByEmailRequestCache.delete(normalizedEmail);
+    appointmentsRequestCache = null;
   });
 
-  appointmentsByEmailRequestCache.set(normalizedEmail, request);
+  appointmentsRequestCache = request;
   return request;
 }
 
 export default function Home() {
-  const [customerEmail] = useState(() => getStoredCustomerEmail());
+  const { data: session } = useSession();
   const [latestAppointment, setLatestAppointment] = useState<AppointmentRecord | null>(null);
   const [statusChangeNotifications, setStatusChangeNotifications] = useState<AppointmentStatusChangeNotification[]>([]);
   const [activeAboutPanel, setActiveAboutPanel] = useState<keyof typeof aboutPanels>("community");
   const [activeServiceIndex, setActiveServiceIndex] = useState(0);
+  const [availableBarbersToday, setAvailableBarbersToday] = useState<number | null>(null);
+  const [soonestOpeningLabel, setSoonestOpeningLabel] = useState<string | null>(null);
+  const [availableTimeLabelsToday, setAvailableTimeLabelsToday] = useState<string[]>([]);
+  const [homeHoursSchedule, setHomeHoursSchedule] = useState<Array<[string, string]>>(
+    aboutPanels.hours.schedule.map(([day, hours]) => [day, hours]),
+  );
+  const [teamBarbers, setTeamBarbers] = useState<TeamBarberCard[]>(defaultBarberCards);
+  const [bookNowHref, setBookNowHref] = useState("/book");
+  const sessionEmail = session?.user?.email?.trim().toLowerCase() ?? "";
+  const visibleLatestAppointment = sessionEmail ? latestAppointment : null;
+  const visibleStatusChangeNotifications = sessionEmail ? statusChangeNotifications : [];
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -215,7 +269,217 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!customerEmail) {
+    let active = true;
+
+    async function loadHomeHours() {
+      try {
+        const response = await fetch("/api/admin/building-hours", { cache: "no-store" });
+        if (!response.ok) {
+          return;
+        }
+
+        const payload = (await response.json().catch(() => [])) as BuildingHoursEntry[];
+        if (!Array.isArray(payload) || payload.length === 0) {
+          return;
+        }
+
+        const byWeekday = new Map<number, BuildingHoursEntry>();
+        for (const entry of payload) {
+          if (!Number.isInteger(entry.weekday) || entry.weekday < 0 || entry.weekday > 6) {
+            continue;
+          }
+          byWeekday.set(entry.weekday, entry);
+        }
+
+        const nextSchedule: Array<[string, string]> = weekdayNames.map((day, weekday) => {
+          const entry = byWeekday.get(weekday);
+          if (!entry || !entry.isOpen) {
+            return [day, "Closed"];
+          }
+
+          return [
+            day,
+            `${formatCompactTimeLabel(entry.startTime)} - ${formatCompactTimeLabel(entry.endTime)}`,
+          ];
+        });
+
+        if (!active) {
+          return;
+        }
+
+        setHomeHoursSchedule(nextSchedule);
+      } catch {
+        // Keep fallback schedule if the API is unavailable.
+      }
+    }
+
+    void loadHomeHours();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadBookingStats() {
+      try {
+        const staffResponse = await fetch("/api/staff?activeOnly=true", {
+          cache: "no-store",
+        });
+
+        if (!staffResponse.ok) {
+          throw new Error("Unable to load staff");
+        }
+
+        const staffPayload = (await staffResponse.json().catch(() => [])) as unknown;
+        const activeStaff = Array.isArray(staffPayload)
+          ? staffPayload
+              .map((staff) => (staff && typeof staff === "object" ? (staff as { name?: unknown }) : null))
+              .filter((staff): staff is { name: string } => typeof staff?.name === "string" && staff.name.trim() !== "")
+          : [];
+
+        const baseTeamCards = activeStaff.map((staff) => {
+          const matchedDefault = defaultBarberCards.find(
+            (barber) => barber.title.toLowerCase() === staff.name.trim().toLowerCase(),
+          );
+
+          return {
+            title: staff.name.trim(),
+            description:
+              matchedDefault?.description ??
+              "Experienced professional focused on precision grooming and client comfort.",
+            specialties:
+              matchedDefault?.specialties ?? ["Precision cuts", "Beard shaping", "Styling"],
+            time: matchedDefault?.time ?? "No slots today",
+          };
+        });
+
+        if (!active) {
+          return;
+        }
+
+        if (activeStaff.length === 0) {
+          setAvailableBarbersToday(0);
+          setSoonestOpeningLabel(null);
+          setAvailableTimeLabelsToday([]);
+          setTeamBarbers([]);
+          setBookNowHref("/book");
+          return;
+        }
+
+        const currentMoment = new Date();
+        const todayIso = toLocalDateIso(currentMoment);
+
+        const availabilityOptions = await Promise.all(
+          activeStaff.map(async (staff) => {
+            try {
+              const response = await fetch(
+                `/api/appointments/availability?date=${todayIso}&barber=${encodeURIComponent(staff.name)}`,
+                { cache: "no-store" },
+              );
+
+              if (!response.ok) {
+                return null;
+              }
+
+              const payload = (await response.json().catch(() => null)) as { hours?: unknown } | null;
+              const hours = payload?.hours;
+
+              if (!hours || typeof hours !== "object") {
+                return null;
+              }
+
+              const availableHours = Object.entries(hours)
+                .filter(([, value]) => Boolean((value as { available?: unknown })?.available))
+                .map(([hour]) => Number.parseInt(hour, 10))
+                .filter((hour) => Number.isInteger(hour))
+                .filter((hour) => {
+                  const slotTimestamp = getSlotTimestampForDateIso(todayIso, hour);
+                  return slotTimestamp !== null && slotTimestamp > currentMoment.getTime();
+                })
+                .sort((first, second) => first - second);
+
+              if (availableHours.length === 0) {
+                return null;
+              }
+
+              return {
+                barber: staff.name,
+                hours: availableHours,
+              };
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        if (!active) {
+          return;
+        }
+
+        const validOptions = availabilityOptions
+          .filter((option): option is { barber: string; hours: number[] } => option !== null)
+          .sort((first, second) => first.hours[0] - second.hours[0] || first.barber.localeCompare(second.barber));
+
+        const uniqueAvailableTimeLabels = Array.from(
+          new Set(
+            validOptions
+              .flatMap((option) => option.hours)
+              .sort((first, second) => first - second)
+              .map((hour) => formatHourLabel(hour)),
+          ),
+        );
+
+        const nextAvailableByBarber = new Map<string, string>(
+          validOptions.map((option) => [option.barber.toLowerCase(), formatHourLabel(option.hours[0])]),
+        );
+
+        const hydratedTeamCards = baseTeamCards.map((barber) => ({
+          ...barber,
+          time: nextAvailableByBarber.get(barber.title.toLowerCase()) ?? "No slots today",
+        }));
+
+        setTeamBarbers(hydratedTeamCards);
+
+        setAvailableBarbersToday(validOptions.length);
+        setSoonestOpeningLabel(validOptions.length > 0 ? formatHourLabel(validOptions[0].hours[0]) : null);
+        setAvailableTimeLabelsToday(uniqueAvailableTimeLabels);
+
+        if (validOptions.length > 0) {
+          const earliestOption = validOptions[0];
+          const params = new URLSearchParams({
+            date: todayIso,
+            barber: earliestOption.barber,
+            time: formatHourLabel(earliestOption.hours[0]),
+          });
+          setBookNowHref(`/book?${params.toString()}`);
+        } else {
+          setBookNowHref("/book");
+        }
+      } catch {
+        if (!active) {
+          return;
+        }
+
+        setAvailableBarbersToday(null);
+        setSoonestOpeningLabel(null);
+        setAvailableTimeLabelsToday([]);
+        setTeamBarbers(defaultBarberCards);
+        setBookNowHref("/book");
+      }
+    }
+
+    void loadBookingStats();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionEmail) {
       return;
     }
 
@@ -223,7 +487,7 @@ export default function Home() {
 
     async function loadUpcomingAppointment() {
       try {
-        const stored = await fetchAppointmentsByEmail(customerEmail);
+        const stored = await fetchSignedInAppointments();
         const unreadStatusChanges = syncAppointmentStatusChangeNotifications(stored);
         const now = Date.now();
         const upcomingActive = stored
@@ -257,7 +521,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [customerEmail]);
+  }, [sessionEmail]);
 
   return (
     <main className="home-page w-full">
@@ -291,7 +555,7 @@ export default function Home() {
           </section>
 
           {/* Status Change Notifications */}
-          {statusChangeNotifications.length > 0 ? (
+          {visibleStatusChangeNotifications.length > 0 ? (
             <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -299,7 +563,7 @@ export default function Home() {
                     Appointment updates
                   </p>
                   <p className="mt-1 text-sm text-[var(--accent-strong)]">
-                    {statusChangeNotifications.length} appointment status change{statusChangeNotifications.length === 1 ? "" : "s"} detected.
+                    {visibleStatusChangeNotifications.length} appointment status change{visibleStatusChangeNotifications.length === 1 ? "" : "s"} detected.
                   </p>
                 </div>
                 <Link
@@ -310,7 +574,7 @@ export default function Home() {
                 </Link>
               </div>
               <div className="mt-3 space-y-2">
-                {statusChangeNotifications.slice(0, 3).map((notification) => (
+                {visibleStatusChangeNotifications.slice(0, 3).map((notification) => (
                   <p key={notification.ref} className="text-sm text-[var(--accent-strong)]">
                     <span className="font-semibold">{notification.ref}</span> changed from <span className="font-semibold capitalize">{notification.from}</span> to <span className="font-semibold capitalize">{notification.to}</span> ({notification.dateLabel} at {notification.time})
                   </p>
@@ -341,7 +605,7 @@ export default function Home() {
                   </Link>
                   <a
                     href="#services"
-                    className="inline-flex items-center justify-center rounded-full border border-[var(--panel-border-faint)] bg-[var(--panel-card)] px-8 py-3 text-base font-semibold text-[var(--surface)] transition hover:bg-[var(--panel-card-strong)]"
+                    className="inline-flex items-center justify-center rounded-full border border-[rgba(248,237,220,0.28)] bg-[var(--panel-card)] px-8 py-3 text-base font-semibold text-[var(--surface)] transition hover:bg-[var(--panel-card-strong)]"
                   >
                     View services
                   </a>
@@ -349,40 +613,40 @@ export default function Home() {
               </div>
 
             {/* Appointment Card or Empty State */}
-            {latestAppointment ? (
-              <div className="flex flex-col justify-center rounded-[1.75rem] border border-[var(--panel-border-soft)] bg-[var(--panel-card)] p-6 backdrop-blur">
+            {visibleLatestAppointment ? (
+              <div className="flex flex-col justify-center rounded-[1.75rem] border border-[rgba(248,237,220,0.22)] bg-[var(--panel-card)] p-6 backdrop-blur">
                 <p className="text-sm uppercase tracking-[0.3em] text-[var(--panel-highlight)]">
                   Your next visit
                 </p>
                 <h3 className="mt-3 text-2xl font-semibold text-[var(--surface)]">
-                  {latestAppointment.service}
+                  {visibleLatestAppointment.service}
                 </h3>
                 <p className="mt-2 text-sm text-[var(--panel-text-muted)]">
-                  {latestAppointment.barber} • {latestAppointment.dateLabel}
+                  {visibleLatestAppointment.barber} • {visibleLatestAppointment.dateLabel}
                 </p>
                 
                 <div className="mt-6 space-y-2">
-                  <div className="flex items-center justify-between rounded-lg bg-[var(--panel-surface-faint)] px-4 py-2">
-                    <span className="text-xs text-[var(--panel-text-soft)]">Time</span>
-                    <span className="font-semibold text-[var(--panel-highlight)]">{latestAppointment.time}</span>
+                  <div className="flex items-center justify-between rounded-lg bg-[rgba(248,237,220,0.1)] px-4 py-2">
+                    <span className="text-xs text-[rgba(248,237,220,0.72)]">Time</span>
+                    <span className="font-semibold text-[var(--panel-highlight)]">{visibleLatestAppointment.time}</span>
                   </div>
-                  <div className="flex items-center justify-between rounded-lg bg-[var(--panel-surface-faint)] px-4 py-2">
-                    <span className="text-xs text-[var(--panel-text-soft)]">Status</span>
-                    <span className={`font-semibold capitalize ${statusColorMap[latestAppointment.status]}`}>
-                      {latestAppointment.status}
+                  <div className="flex items-center justify-between rounded-lg bg-[rgba(248,237,220,0.1)] px-4 py-2">
+                    <span className="text-xs text-[rgba(248,237,220,0.72)]">Status</span>
+                    <span className={`font-semibold capitalize ${statusColorMap[visibleLatestAppointment.status]}`}>
+                      {visibleLatestAppointment.status}
                     </span>
                   </div>
                 </div>
 
                 <Link
                   href="/appointments"
-                  className="mt-4 rounded-lg border border-[var(--panel-border-soft)] bg-[var(--panel-card-strong)] px-4 py-2 text-center text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--panel-hover-soft)]"
+                  className="mt-4 rounded-lg border border-[rgba(248,237,220,0.22)] bg-[var(--panel-card-strong)] px-4 py-2 text-center text-sm font-semibold text-[var(--surface)] transition hover:bg-[rgba(248,237,220,0.24)]"
                 >
                   View all appointments
                 </Link>
               </div>
             ) : (
-              <div className="flex flex-col justify-center rounded-[1.75rem] border border-[var(--panel-border-soft)] bg-[var(--panel-card)] p-6 backdrop-blur">
+              <div className="flex flex-col justify-center rounded-[1.75rem] border border-[rgba(248,237,220,0.22)] bg-[var(--panel-card)] p-6 backdrop-blur">
                 <p className="text-sm uppercase tracking-[0.3em] text-[var(--panel-highlight)]">
                   Ready to book?
                 </p>
@@ -393,19 +657,39 @@ export default function Home() {
                   Get started in seconds. Pick your service, choose a barber, and lock in your time.
                 </p>
 
-                <div className="mt-6 space-y-2">
-                  <div className="flex items-center justify-between rounded-lg bg-[var(--panel-surface-faint)] px-4 py-2">
-                    <span className="text-xs text-[var(--panel-text-soft)]">Barbers available</span>
-                    <span className="font-semibold text-[var(--foreground)]">3 pros today</span>
+                <div className="mt-6 overflow-hidden rounded-xl border border-[rgba(248,237,220,0.12)]">
+                  <div className="flex items-center justify-between bg-[rgba(248,237,220,0.06)] px-4 py-3">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[rgba(248,237,220,0.45)]">Barbers available</span>
+                    <span className="text-sm font-bold text-white">
+                      {availableBarbersToday === null
+                        ? "—"
+                        : availableBarbersToday === 0
+                        ? "None today"
+                        : `${availableBarbersToday} ${availableBarbersToday === 1 ? "pro" : "pros"}`}
+                    </span>
                   </div>
-                  <div className="flex items-center justify-between rounded-lg bg-[var(--panel-surface-faint)] px-4 py-2">
-                    <span className="text-xs text-[var(--panel-text-soft)]">Soonest opening</span>
-                    <span className="font-semibold text-[var(--foreground)]">11:30 AM</span>
+                  <div className="flex items-center justify-between border-t border-[rgba(248,237,220,0.08)] bg-[rgba(248,237,220,0.04)] px-4 py-3">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[rgba(248,237,220,0.45)]">Soonest opening</span>
+                    <span className="text-sm font-bold text-[var(--panel-highlight)]">{soonestOpeningLabel ?? "—"}</span>
+                  </div>
+                  <div className="border-t border-[rgba(248,237,220,0.08)] bg-[rgba(248,237,220,0.03)] px-4 py-3">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[rgba(248,237,220,0.45)]">Available times</span>
+                    {availableTimeLabelsToday.length > 0 ? (
+                      <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1.5">
+                        {availableTimeLabelsToday.slice(0, 6).map((label) => (
+                          <span key={label} className="text-sm font-semibold tabular-nums text-white">
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-sm font-semibold text-[rgba(248,237,220,0.5)]">No openings today</p>
+                    )}
                   </div>
                 </div>
 
                 <Link
-                  href="/book"
+                  href={bookNowHref}
                   className="mt-4 rounded-lg bg-[var(--button-primary)] px-4 py-2.5 text-center text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
                 >
                   Book now
@@ -452,8 +736,8 @@ export default function Home() {
               </li>
             </ul>
           </div>
-          <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-6 shadow-[0_18px_40px_var(--shadow-card)] backdrop-blur-sm md:p-8">
-            <div className="flex flex-wrap items-center gap-1 rounded-full bg-[var(--panel)] p-1.5 text-[var(--surface)] shadow-[0_10px_24px_var(--shadow-elevated)] sm:w-fit">
+          <div className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--card-bg-soft)] p-6 shadow-[0_18px_40px_rgba(33,28,22,0.16)] backdrop-blur-sm md:p-8">
+            <div className="flex flex-wrap items-center gap-1 rounded-full bg-[rgba(100,19,32,0.92)] p-1.5 text-[var(--surface)] shadow-[0_10px_24px_rgba(66,24,22,0.12)] sm:w-fit">
               {(Object.entries(aboutPanels) as Array<[keyof typeof aboutPanels, (typeof aboutPanels)[keyof typeof aboutPanels]]>).map(([key, panel]) => {
                 const isActive = activeAboutPanel === key;
 
@@ -466,7 +750,7 @@ export default function Home() {
                     className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                       isActive
                         ? "bg-[var(--surface)] text-[var(--accent-strong)]"
-                        : "bg-transparent text-[var(--surface)] hover:bg-[var(--panel-surface-faint)]"
+                        : "bg-transparent text-[var(--surface)] hover:bg-[rgba(248,237,220,0.12)]"
                     }`}
                   >
                     {panel.label}
@@ -492,7 +776,7 @@ export default function Home() {
                 <div className="mt-6 space-y-3">
                   {aboutPanels.community.highlights.map((highlight) => (
                     <div key={highlight} className="flex items-center gap-3 text-left">
-                      <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[var(--tone-surface-soft)] text-[var(--accent-strong)]">
+                      <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-[rgba(100,19,32,0.08)] text-[var(--accent-strong)]">
                         <FiClock className="h-4 w-4" />
                       </span>
                       <span className="text-sm font-medium text-[var(--foreground)]">{highlight}</span>
@@ -503,12 +787,12 @@ export default function Home() {
             ) : null}
 
             {activeAboutPanel === "info" ? (
-              <div className="mt-8 rounded-[1.5rem] bg-[var(--surface)] px-6 py-7 shadow-[0_10px_24px_var(--shadow-faint)]">
+              <div className="mt-8 rounded-[1.5rem] bg-[var(--surface)] px-6 py-7 shadow-[0_10px_24px_rgba(99,58,25,0.05)]">
                 <h3 className="text-[1.65rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">
                   {aboutPanels.info.heading}
                 </h3>
-                <div className="mt-8 flex items-start gap-4 border-b border-[var(--tone-border-soft)] pb-5">
-                  <span className="mt-1 inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--tone-surface-soft)] text-[var(--accent-strong)]">
+                <div className="mt-8 flex items-start gap-4 border-b border-[rgba(100,19,32,0.14)] pb-5">
+                  <span className="mt-1 inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(100,19,32,0.08)] text-[var(--accent-strong)]">
                     <FiMapPin className="h-5 w-5" />
                   </span>
                   <div>
@@ -517,8 +801,8 @@ export default function Home() {
                     <p className="mt-3 text-sm text-[var(--muted)]">{aboutPanels.info.landmark}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-4 border-b border-[var(--tone-border-soft)] py-5">
-                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--tone-surface-soft)] text-[var(--accent-strong)]">
+                <div className="flex items-center gap-4 border-b border-[rgba(100,19,32,0.14)] py-5">
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(100,19,32,0.08)] text-[var(--accent-strong)]">
                     <FiNavigation className="h-5 w-5" />
                   </span>
                   <a href="#" className="text-[1.05rem] font-semibold text-[var(--accent)] transition hover:underline">
@@ -526,7 +810,7 @@ export default function Home() {
                   </a>
                 </div>
                 <div className="flex items-center gap-4 pt-5">
-                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--tone-surface-soft)] text-[var(--accent-strong)]">
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(100,19,32,0.08)] text-[var(--accent-strong)]">
                     <FiPhone className="h-5 w-5" />
                   </span>
                   <a href="tel:+1xxxxxxxxxx" className="text-[1.05rem] font-medium text-[var(--foreground)] transition hover:text-[var(--accent)]">
@@ -539,19 +823,19 @@ export default function Home() {
             {activeAboutPanel === "hours" ? (() => {
               const today = new Date().toLocaleDateString("en-US", { weekday: "long" });
               return (
-                <div className="mt-8 rounded-[1.5rem] bg-[var(--surface)] px-6 py-7 shadow-[0_10px_24px_var(--shadow-faint)]">
+                <div className="mt-8 rounded-[1.5rem] bg-[var(--surface)] px-6 py-7 shadow-[0_10px_24px_rgba(99,58,25,0.05)]">
                   <h3 className="text-[1.65rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">
                     {aboutPanels.hours.heading}
                   </h3>
                   <div className="mt-6 flex flex-col gap-1">
-                    {aboutPanels.hours.schedule.map(([day, hours]) => {
+                    {homeHoursSchedule.map(([day, hours]) => {
                       const isToday = day === today;
                       return (
                         <div
                           key={day}
                           className="flex items-center justify-between rounded-lg px-3 py-2 text-sm"
                           style={{
-                            background: isToday ? "var(--tone-surface-today)" : "transparent",
+                            background: isToday ? "rgba(100,19,32,0.07)" : "transparent",
                             borderLeft: isToday ? "3px solid var(--accent)" : "3px solid transparent",
                           }}
                         >
@@ -613,7 +897,7 @@ export default function Home() {
                       </div>
                     </div>
                     {/* Service label overlay */}
-                    <div className="absolute bottom-0 left-0 right-0 bg-[linear-gradient(to_top,var(--panel-overlay-from),transparent)] px-8 py-6">
+                    <div className="absolute bottom-0 left-0 right-0 bg-[linear-gradient(to_top,rgba(36,20,23,0.72),transparent)] px-8 py-6">
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--panel-highlight)]">{service.duration}</p>
                       <h3 className="mt-1 text-2xl font-bold text-[var(--surface)]">{service.title}</h3>
                       <p className="mt-1 text-sm text-[var(--panel-text-muted)]">{service.description}</p>
@@ -659,8 +943,13 @@ export default function Home() {
             </p>
           </div>
 
+          {teamBarbers.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] px-5 py-6 text-sm text-[var(--muted)]">
+              No active team members are currently available.
+            </div>
+          ) : (
           <div className="grid gap-6 md:grid-cols-3">
-            {barbers.map((barber) => (
+            {teamBarbers.map((barber) => (
               <div key={barber.title} className="overflow-hidden rounded-[1.5rem] border border-[var(--card-border-soft)] bg-[var(--card-bg)] transition hover:shadow-lg">
                 {/* Avatar */}
                 <div className="flex h-48 items-center justify-center bg-[linear-gradient(135deg,var(--surface-strong),var(--surface-soft))] text-center">
@@ -702,6 +991,7 @@ export default function Home() {
               </div>
             ))}
           </div>
+          )}
           </section>
         </div>
       </section>
@@ -718,7 +1008,7 @@ export default function Home() {
                 <h2 className="section-heading mt-2 font-bold text-[var(--foreground)]">
                   Loved by everyone
                 </h2>
-                <div className="mt-8 rounded-[2rem] border border-[var(--tone-border-soft)] bg-[var(--card-bg-soft)] p-8 shadow-[0_20px_40px_var(--shadow-soft)] backdrop-blur-sm">
+                <div className="mt-8 rounded-[2rem] border border-[rgba(100,19,32,0.14)] bg-[var(--card-bg-soft)] p-8 shadow-[0_20px_40px_rgba(99,58,25,0.08)] backdrop-blur-sm">
                   <div className="flex gap-1">
                     {Array.from({ length: featuredTestimonial.rating }).map((_, i) => (
                       <svg key={i} className="h-5 w-5 text-[var(--panel-highlight)]" fill="currentColor" viewBox="0 0 20 20">
@@ -727,7 +1017,7 @@ export default function Home() {
                     ))}
                   </div>
                   <p className="mt-6 text-[clamp(1.5rem,2.4vw,2.4rem)] font-semibold leading-[1.2] text-[var(--foreground)]">
-                    "{featuredTestimonial.text}"
+                    &ldquo;{featuredTestimonial.text}&rdquo;
                   </p>
                   <p className="mt-6 text-base font-semibold uppercase tracking-[0.12em] text-[var(--accent-strong)]">
                     {featuredTestimonial.name}
@@ -735,9 +1025,9 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="space-y-5 border-l-0 border-[var(--tone-border-soft)] lg:border-l lg:pl-8">
+              <div className="space-y-5 border-l-0 border-[rgba(100,19,32,0.14)] lg:border-l lg:pl-8">
                 {supportingTestimonials.map((testimonial) => (
-                  <div key={testimonial.name} className="border-b border-[var(--tone-border-soft)] pb-5 last:border-b-0 last:pb-0">
+                  <div key={testimonial.name} className="border-b border-[rgba(100,19,32,0.14)] pb-5 last:border-b-0 last:pb-0">
                     <div className="flex gap-1">
                       {Array.from({ length: testimonial.rating }).map((_, i) => (
                         <svg key={i} className="h-4 w-4 text-[var(--panel-highlight)]" fill="currentColor" viewBox="0 0 20 20">
@@ -745,7 +1035,7 @@ export default function Home() {
                         </svg>
                       ))}
                     </div>
-                    <p className="mt-3 text-base leading-7 text-[var(--foreground)]">"{testimonial.text}"</p>
+                    <p className="mt-3 text-base leading-7 text-[var(--foreground)]">&ldquo;{testimonial.text}&rdquo;</p>
                     <p className="mt-3 text-sm font-semibold uppercase tracking-[0.12em] text-[var(--accent-strong)]">
                       {testimonial.name}
                     </p>
@@ -761,25 +1051,25 @@ export default function Home() {
         <div className="site-shell">
           {/* CTA Section */}
           <section className="section-card rounded-[2rem] border border-[var(--border)] bg-[linear-gradient(135deg,var(--surface-soft),var(--surface))] text-center shadow-sm">
-          <h2 className="section-heading font-bold text-[var(--foreground)]">
-            Ready for your next cut?
-          </h2>
-          <p className="mt-4 text-lg text-[var(--muted)]">
-            Book in seconds. No waiting. Great haircuts, every time.
-          </p>
-          <Link
-            href="/book"
-            className="mt-8 inline-flex items-center justify-center rounded-full bg-[var(--button-primary)] px-8 py-3 text-base font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
-          >
-            Book an appointment
-          </Link>
+            <h2 className="section-heading font-bold text-[var(--foreground)]">
+              Ready for your next cut?
+            </h2>
+            <p className="mt-4 text-lg text-[var(--muted)]">
+              Book in seconds. No waiting. Great haircuts, every time.
+            </p>
+            <Link
+              href="/book"
+              className="mt-8 inline-flex items-center justify-center rounded-full bg-[var(--button-primary)] px-8 py-3 text-base font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
+            >
+              Book an appointment
+            </Link>
           </section>
         </div>
       </section>
 
       <section className="home-band home-band--canvas">
         <div className="site-shell">
-          <section className="flex flex-col gap-5 border-t border-[var(--tone-border-soft)] py-5 lg:flex-row lg:items-center lg:justify-between">
+          <section className="flex flex-col gap-5 border-t border-[rgba(100,19,32,0.14)] py-5 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--accent)]">
                 Follow along
@@ -797,9 +1087,9 @@ export default function Home() {
                   <a
                     key={channel.platform}
                     href="#"
-                    className="inline-flex items-center gap-3 rounded-full border border-[var(--tone-border-mid)] bg-[var(--surface-frost)] px-4 py-2.5 text-[var(--foreground)] transition hover:bg-[var(--surface-elevated)]"
+                    className="inline-flex items-center gap-3 rounded-full border border-[rgba(100,19,32,0.16)] bg-[rgba(248,237,220,0.62)] px-4 py-2.5 text-[var(--foreground)] transition hover:bg-[rgba(248,237,220,0.84)]"
                   >
-                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--tone-surface-soft)] text-[var(--accent-strong)]">
+                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[rgba(100,19,32,0.08)] text-[var(--accent-strong)]">
                       <Icon className="h-4 w-4" />
                     </span>
                     <span className="min-w-0">

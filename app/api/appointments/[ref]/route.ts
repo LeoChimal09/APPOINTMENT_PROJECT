@@ -14,7 +14,8 @@ import {
 } from "@/lib/appointments/appointment.types";
 import { isOwnerAuthorized } from "@/server/auth/owner-auth";
 import { printCustomerStatusUpdateNotification } from "@/lib/mailer";
-import { isRateLimited } from "@/lib/rate-limiter";
+import { checkRateLimit, getRateLimitHeaders } from "@/lib/rate-limiter";
+import { getAuthSession } from "@/lib/auth";
 
 type AppointmentRouteContext = {
   params: Promise<{
@@ -24,15 +25,6 @@ type AppointmentRouteContext = {
 
 function isAppointmentStatus(value: unknown): value is AppointmentStatus {
   return typeof value === "string" && appointmentStatusValues.includes(value as AppointmentStatus);
-}
-
-function getCustomerEmailFromBody(body: unknown) {
-  if (!body || typeof body !== "object") {
-    return null;
-  }
-
-  const value = (body as { customerEmail?: unknown }).customerEmail;
-  return typeof value === "string" ? value.trim().toLowerCase() : null;
 }
 
 function getCancellationNoteFromBody(body: unknown) {
@@ -69,10 +61,15 @@ function getOverwritePayload(body: unknown): AppointmentRequestInput | null {
     return null;
   }
 
+  const normalizedDateIso = normalizeDateIsoInput(candidate.dateIso);
+  if (!normalizedDateIso) {
+    return null;
+  }
+
   return {
     service: candidate.service,
     barber: candidate.barber,
-    dateIso: candidate.dateIso,
+    dateIso: normalizedDateIso,
     dateLabel: candidate.dateLabel,
     time: candidate.time,
     customerName: candidate.customerName,
@@ -80,6 +77,21 @@ function getOverwritePayload(body: unknown): AppointmentRequestInput | null {
     customerPhone: candidate.customerPhone,
     notes: typeof candidate.notes === "string" ? candidate.notes : null,
   };
+}
+
+function normalizeDateIsoInput(value: string) {
+  const trimmed = value.trim();
+  const directIsoMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})$/);
+  if (directIsoMatch) {
+    return directIsoMatch[1];
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, "0")}-${String(parsed.getUTCDate()).padStart(2, "0")}`;
 }
 
 const OVERWRITE_FIELD_LIMITS: Record<string, number> = {
@@ -121,10 +133,8 @@ export async function GET(_request: NextRequest, context: AppointmentRouteContex
 
     return NextResponse.json(appointment);
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to load appointment." },
-      { status: 500 },
-    );
+    console.error("[appointments GET ref]", error);
+    return NextResponse.json({ error: "Failed to load appointment." }, { status: 500 });
   }
 }
 
@@ -140,10 +150,11 @@ export async function PATCH(request: NextRequest, context: AppointmentRouteConte
     request.headers.get("x-real-ip") ??
     "unknown";
 
-  if (isRateLimited(`patch:ip:${ip}`, 20, 60 * 1000)) {
+  const patchRateLimitResult = await checkRateLimit(`rl:appointments:update:ip:${ip}`, 20, 60 * 1000);
+  if (patchRateLimitResult.limited) {
     return NextResponse.json(
       { error: "Too many requests. Please wait a minute and try again." },
-      { status: 429 },
+      { status: 429, headers: getRateLimitHeaders(patchRateLimitResult) },
     );
   }
 
@@ -151,9 +162,10 @@ export async function PATCH(request: NextRequest, context: AppointmentRouteConte
   const shouldOverwrite =
     body && typeof body === "object" && (body as { overwrite?: unknown }).overwrite === true;
   const status = body && typeof body === "object" ? (body as { status?: unknown }).status : undefined;
-  const customerEmail = getCustomerEmailFromBody(body);
   const cancellationNote = getCancellationNoteFromBody(body);
   const isOwnerRequest = await isOwnerAuthorized(request);
+  const session = await getAuthSession();
+  const sessionCustomerEmail = session?.user?.email?.trim().toLowerCase() ?? null;
 
   if (shouldOverwrite) {
     const overwritePayload = getOverwritePayload(body);
@@ -172,22 +184,31 @@ export async function PATCH(request: NextRequest, context: AppointmentRouteConte
       }
 
       const isCustomerOwnedAppointment =
-        customerEmail !== null && existingAppointment.customerEmail.trim().toLowerCase() === customerEmail;
+        sessionCustomerEmail !== null && existingAppointment.customerEmail.trim().toLowerCase() === sessionCustomerEmail;
       const canCustomerOverwrite = isCustomerOwnedAppointment && existingAppointment.status === "pending";
 
       if (!isOwnerRequest && !canCustomerOverwrite) {
         return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
       }
 
+      const nextCustomerEmail = isOwnerRequest
+        ? overwritePayload.customerEmail.trim().toLowerCase()
+        : sessionCustomerEmail;
+
+      if (!nextCustomerEmail) {
+        return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+      }
+
       const overwrittenAppointment = await overwriteAppointmentDetails(ref, {
         ...overwritePayload,
+        customerEmail: nextCustomerEmail,
         notes: overwritePayload.notes?.trim() ? overwritePayload.notes.trim() : null,
       });
 
       return NextResponse.json(overwrittenAppointment);
-    } catch (error) {
+    } catch {
       return NextResponse.json(
-        { error: error instanceof Error ? error.message : "Failed to replace appointment." },
+        { error: "Failed to replace appointment." },
         { status: 500 },
       );
     }
@@ -204,7 +225,7 @@ export async function PATCH(request: NextRequest, context: AppointmentRouteConte
     }
 
     const isCustomerOwnedAppointment =
-      customerEmail !== null && existingAppointment.customerEmail.trim().toLowerCase() === customerEmail;
+      sessionCustomerEmail !== null && existingAppointment.customerEmail.trim().toLowerCase() === sessionCustomerEmail;
 
     const canCustomerCancel =
       isCustomerOwnedAppointment &&
@@ -249,9 +270,9 @@ export async function PATCH(request: NextRequest, context: AppointmentRouteConte
     }
 
     return NextResponse.json(updatedAppointment);
-  } catch (error) {
+  } catch {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to update appointment." },
+      { error: "Failed to update appointment." },
       { status: 500 },
     );
   }
@@ -259,6 +280,8 @@ export async function PATCH(request: NextRequest, context: AppointmentRouteConte
 
 export async function DELETE(request: NextRequest, context: AppointmentRouteContext) {
   const { ref } = await context.params;
+  const url = new URL(request.url);
+  const scope = url.searchParams.get("scope")?.trim().toLowerCase();
 
   if (!ref || ref.length > 40) {
     return NextResponse.json({ error: "Invalid appointment reference." }, { status: 400 });
@@ -269,16 +292,17 @@ export async function DELETE(request: NextRequest, context: AppointmentRouteCont
     request.headers.get("x-real-ip") ??
     "unknown";
 
-  if (isRateLimited(`delete:ip:${ip}`, 20, 60 * 1000)) {
+  const deleteRateLimitResult = await checkRateLimit(`rl:appointments:delete:ip:${ip}`, 20, 60 * 1000);
+  if (deleteRateLimitResult.limited) {
     return NextResponse.json(
       { error: "Too many requests. Please wait a minute and try again." },
-      { status: 429 },
+      { status: 429, headers: getRateLimitHeaders(deleteRateLimitResult) },
     );
   }
 
-  const body = await request.json().catch(() => null);
-  const customerEmail = getCustomerEmailFromBody(body);
   const isOwnerRequest = await isOwnerAuthorized(request);
+  const session = await getAuthSession();
+  const sessionCustomerEmail = session?.user?.email?.trim().toLowerCase() ?? null;
 
   try {
     const existingAppointment = await getAppointment(ref);
@@ -286,12 +310,24 @@ export async function DELETE(request: NextRequest, context: AppointmentRouteCont
       return NextResponse.json({ error: "Appointment not found." }, { status: 404 });
     }
 
+    // Explicit owner scope forces owner-hidden behavior, even when
+    // the signed-in owner email also matches the customer email.
+    if (scope === "owner" && isOwnerRequest) {
+      const hiddenAppointment = await hideAppointmentFromOwner(ref);
+      return NextResponse.json({
+        success: true,
+        deleted: hiddenAppointment === undefined,
+        appointment: hiddenAppointment ?? null,
+      });
+    }
+
     const isCustomerOwnedAppointment =
-      customerEmail !== null && existingAppointment.customerEmail.trim().toLowerCase() === customerEmail;
+      sessionCustomerEmail !== null && existingAppointment.customerEmail.trim().toLowerCase() === sessionCustomerEmail;
     const isCustomerDeletableStatus =
       existingAppointment.status === "completed" ||
       existingAppointment.status === "cancelled" ||
-      existingAppointment.status === "denied";
+      existingAppointment.status === "denied" ||
+      existingAppointment.status === "expired";
 
     const isValidCustomerDeleteRequest =
       isCustomerOwnedAppointment && isCustomerDeletableStatus;
@@ -304,14 +340,22 @@ export async function DELETE(request: NextRequest, context: AppointmentRouteCont
     // even when the same user is also an owner/admin.
     if (isValidCustomerDeleteRequest) {
       const hiddenAppointment = await hideAppointmentFromCustomer(ref);
-      return NextResponse.json(hiddenAppointment);
+      return NextResponse.json({
+        success: true,
+        deleted: hiddenAppointment === undefined,
+        appointment: hiddenAppointment ?? null,
+      });
     }
 
     const hiddenAppointment = await hideAppointmentFromOwner(ref);
-    return NextResponse.json(hiddenAppointment);
-  } catch (error) {
+    return NextResponse.json({
+      success: true,
+      deleted: hiddenAppointment === undefined,
+      appointment: hiddenAppointment ?? null,
+    });
+  } catch {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to delete appointment." },
+      { error: "Failed to delete appointment." },
       { status: 500 },
     );
   }
