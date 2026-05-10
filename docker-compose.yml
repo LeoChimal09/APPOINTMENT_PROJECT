@@ -1,0 +1,23 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: appointmentproject_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-appointmentproject}
+      MYSQL_USER: ${MYSQL_USER:-appointmentproject}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-appointmentproject}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root-dev}
+    ports:
+      - "${MYSQL_PORT:-3308}:3306"
+    volumes:
+      - appointmentproject_mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  appointmentproject_mysql_data:

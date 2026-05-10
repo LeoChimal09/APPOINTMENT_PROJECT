@@ -1,28 +1,94 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const primaryButtonClassName =
-  "inline-flex select-none items-center justify-center rounded-full border border-[var(--accent-strong)] bg-[var(--button-primary)] px-6 py-3 text-sm font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]";
+  "btn btn-primary btn-lg select-none";
 
 const secondaryButtonClassName =
-  "inline-flex select-none items-center justify-center rounded-full border border-[var(--border)] bg-[var(--button-secondary)] px-6 py-3 text-sm font-semibold text-[var(--accent-strong)] transition hover:bg-[var(--button-secondary-hover)] hover:border-[var(--accent-strong)]";
+  "btn btn-secondary btn-secondary-accent btn-lg select-none";
 
-const services = ["Classic cut", "Fade + beard", "VIP grooming"];
-const barbers = ["Luis", "Marcos", "Andrea"];
+const services = (process.env.NEXT_PUBLIC_SERVICES || "Classic cut,Fade + beard,VIP grooming").split(",").map(s => s.trim());
+const fallbackBarbers = (process.env.NEXT_PUBLIC_BARBERS || "Luis,Marcos,Andrea").split(",").map(b => b.trim());
 const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-const openingHours = Array.from({length: 15}, (_, index) => {
-  const hour = index + 6;
-  const suffix = hour >= 12 ? "PM" : "AM";
-  const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+type StaffMember = {
+  id: number;
+  name: string;
+  isActive: boolean;
+};
 
-  return {
-    hour,
-    label: `${displayHour}:00 ${suffix}`,
-  };
-});
+type TimeSlot = {
+  hour: number;
+  label: string;
+};
+
+type BuildingHoursEntry = {
+  weekday: number;
+  isOpen: boolean;
+  startTime: string;
+  endTime: string;
+};
+
+function parseTimeLabelToMinutes(value: string): number | null {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const [, rawHour, rawMinutes, rawPeriod] = match;
+  const period = rawPeriod.toUpperCase();
+  let hour = Number.parseInt(rawHour, 10) % 12;
+  const minutes = Number.parseInt(rawMinutes, 10);
+
+  if (Number.isNaN(hour) || Number.isNaN(minutes)) {
+    return null;
+  }
+
+  if (period === "PM") {
+    hour += 12;
+  }
+
+  return (hour * 60) + minutes;
+}
+
+function createBuildingHoursByWeekday(entries: BuildingHoursEntry[]): Record<number, BuildingHoursEntry> {
+  const result: Record<number, BuildingHoursEntry> = {};
+
+  for (const entry of entries) {
+    result[entry.weekday] = entry;
+  }
+
+  return result;
+}
+
+function getSlotsForBuildingEntry(entry: BuildingHoursEntry | undefined): TimeSlot[] {
+  if (!entry || !entry.isOpen) {
+    return [];
+  }
+
+  const startMinutes = parseTimeLabelToMinutes(entry.startTime);
+  const endMinutes = parseTimeLabelToMinutes(entry.endTime);
+  if (startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
+    return [];
+  }
+
+  const startHour = Math.floor(startMinutes / 60);
+  const endHour = Math.ceil(endMinutes / 60);
+  const slots: TimeSlot[] = [];
+
+  for (let hour = startHour; hour < endHour; hour++) {
+    const suffix = hour >= 12 ? "PM" : "AM";
+    const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+    slots.push({
+      hour,
+      label: `${displayHour}:00 ${suffix}`,
+    });
+  }
+
+  return slots;
+}
 
 function startOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -47,24 +113,38 @@ function getSlotDateTime(date: Date, hour: number) {
   );
 }
 
-function getAvailableTimes(date: Date, currentMoment: Date) {
-  return openingHours.filter((slot) => getSlotDateTime(date, slot.hour) > currentMoment);
+function toDateIso(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function hasAvailableTimes(date: Date, currentMoment: Date) {
-  return getAvailableTimes(date, currentMoment).length > 0;
-}
-
-function getInitialBookingDate(currentMoment: Date) {
-  for (let offset = 0; offset < 31; offset += 1) {
-    const candidate = addDays(currentMoment, offset);
-
-    if (hasAvailableTimes(candidate, currentMoment)) {
-      return candidate;
-    }
+function parseDateIsoAsLocal(value: string) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
-  return currentMoment;
+  const [, rawYear, rawMonth, rawDay] = match;
+  const year = Number.parseInt(rawYear, 10);
+  const month = Number.parseInt(rawMonth, 10);
+  const day = Number.parseInt(rawDay, 10);
+  const parsed = new Date(year, month - 1, day);
+
+  if (
+    Number.isNaN(parsed.getTime())
+    || parsed.getFullYear() !== year
+    || parsed.getMonth() !== month - 1
+    || parsed.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function toMonthIso(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
 function isSameDay(first: Date, second: Date) {
@@ -75,62 +155,435 @@ function isSameDay(first: Date, second: Date) {
   );
 }
 
-function getInitialBookingSelection(currentMoment: Date) {
-  if (typeof window === "undefined") {
-    return {
-      date: null as Date | null,
-      services: [] as string[],
-      barber: "",
-      time: "",
-    };
-  }
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
 
-  const params = new URLSearchParams(window.location.search);
-  const requestedServices = (params.get("service") ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => services.includes(value));
-  const requestedBarber = params.get("barber") ?? "";
-  const requestedDate = params.get("date");
-  const requestedTime = params.get("time") ?? "";
-
-  let selectedDate: Date | null = null;
-  let selectedTime = "";
-
-  if (requestedDate) {
-    const parsedDate = new Date(requestedDate);
-    if (!Number.isNaN(parsedDate.getTime()) && hasAvailableTimes(parsedDate, currentMoment)) {
-      selectedDate = parsedDate;
-
-      if (requestedTime) {
-        const isValidTime = getAvailableTimes(parsedDate, currentMoment).some(
-          (slot) => slot.label === requestedTime,
-        );
-        if (isValidTime) {
-          selectedTime = requestedTime;
-        }
-      }
-    }
-  }
-
-  return {
-    date: selectedDate,
-    services: Array.from(new Set(requestedServices)),
-    barber: barbers.includes(requestedBarber) ? requestedBarber : "",
-    time: selectedTime,
-  };
+function formatTimeForDisplay(date: Date) {
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export default function BookPage() {
+  // Validate time slot availability against ranking system:
+  // 1. Building Hours (highest priority)
+  // 2. Staff Hours (medium priority)
+  // 3. Customer Accepted Appointments (lowest priority)
   const [currentMoment] = useState(() => new Date());
-  const [initialSelection] = useState(() => getInitialBookingSelection(currentMoment));
+  const [buildingHoursByWeekday, setBuildingHoursByWeekday] = useState<Record<number, BuildingHoursEntry>>({});
+  const [hasLoadedBuildingHours, setHasLoadedBuildingHours] = useState(false);
+  
+  // Helper functions that depend on building hours from schema
+  const getTimeSlotsForDate = useCallback((date: Date): TimeSlot[] => {
+    const weekday = date.getDay();
+    return getSlotsForBuildingEntry(buildingHoursByWeekday[weekday]);
+  }, [buildingHoursByWeekday]);
+
+  const getAvailableTimes = useCallback((date: Date, currentMomentParam: Date): TimeSlot[] => {
+    return getTimeSlotsForDate(date).filter((slot) => getSlotDateTime(date, slot.hour) > currentMomentParam);
+  }, [getTimeSlotsForDate]);
+
+  const hasAvailableTimes = useCallback((date: Date, currentMomentParam: Date): boolean => {
+    return getAvailableTimes(date, currentMomentParam).length > 0;
+  }, [getAvailableTimes]);
+
+  const getInitialBookingDate = useCallback((currentMomentParam: Date): Date => {
+    for (let offset = 0; offset < 31; offset += 1) {
+      const candidate = addDays(currentMomentParam, offset);
+      if (hasAvailableTimes(candidate, currentMomentParam)) {
+        return candidate;
+      }
+    }
+    return currentMomentParam;
+  }, [hasAvailableTimes]);
+
+  const getBookingSelectionFromParams = useCallback((
+    params: URLSearchParams,
+    currentMomentParam: Date,
+    barbersParam: string[],
+  ): { date: Date | null; services: string[]; barber: string; time: string } => {
+    const requestedServices = params.getAll("service").reduce<string[]>((accumulator, rawValue) => {
+      for (const parsedValue of rawValue.split(",")) {
+        const trimmedValue = parsedValue.trim();
+        if (services.includes(trimmedValue)) {
+          accumulator.push(trimmedValue);
+        }
+      }
+      return accumulator;
+    }, []);
+    const requestedBarber = params.get("barber") ?? "";
+    const requestedDate = params.get("date");
+    const requestedTime = params.get("time") ?? "";
+
+    let selectedDate: Date | null = null;
+    let selectedTime = "";
+
+    if (requestedDate) {
+      const parsedDate = parseDateIsoAsLocal(requestedDate);
+      if (parsedDate && hasAvailableTimes(parsedDate, currentMomentParam)) {
+        selectedDate = parsedDate;
+
+        if (requestedTime) {
+          const isValidTime = getAvailableTimes(parsedDate, currentMomentParam).some(
+            (slot) => slot.label === requestedTime,
+          );
+          if (isValidTime) {
+            selectedTime = requestedTime;
+          }
+        }
+      }
+    }
+
+    return {
+      date: selectedDate,
+      services: Array.from(new Set<string>(requestedServices)),
+      barber: barbersParam.includes(requestedBarber) ? requestedBarber : "",
+      time: selectedTime,
+    };
+  }, [getAvailableTimes, hasAvailableTimes]);
+
   const [visibleMonth, setVisibleMonth] = useState(() =>
-    startOfMonth(initialSelection.date ?? getInitialBookingDate(currentMoment)),
+    startOfMonth(getInitialBookingDate(currentMoment)),
   );
-  const [selectedDate, setSelectedDate] = useState<Date | null>(initialSelection.date);
-  const [selectedServices, setSelectedServices] = useState<string[]>(initialSelection.services);
-  const [selectedBarber, setSelectedBarber] = useState(initialSelection.barber);
-  const [selectedTime, setSelectedTime] = useState(initialSelection.time);
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [selectedServices, setSelectedServices] = useState<string[]>([]);
+  const [barbers, setBarbers] = useState<string[]>([]);
+  const [selectedBarber, setSelectedBarber] = useState("");
+  const [selectedTime, setSelectedTime] = useState("");
+  const [validatedAvailability, setValidatedAvailability] = useState<Record<number, boolean>>({});
+  const [aggregateTimeAvailability, setAggregateTimeAvailability] = useState<Record<number, boolean>>({});
+  const [barberTimeAvailability, setBarberTimeAvailability] = useState<Record<string, Record<number, boolean>>>({});
+  const [calendarAvailability, setCalendarAvailability] = useState<Record<string, boolean>>({});
+  const [barberAvailability, setBarberAvailability] = useState<Record<string, boolean>>({});
+  const [hasLoadedBarbers, setHasLoadedBarbers] = useState(false);
+  const hasAppliedQueryPrefill = useRef(false);
+
+  type BatchedAvailabilityResponse = {
+    hours: Record<string, { available: boolean }>;
+  };
+
+  type MonthlyAvailabilityResponse = {
+    dates: Record<string, { available: boolean }>;
+  };
+
+  const loadDayAvailability = useCallback(async (dateIso: string, barber: string): Promise<BatchedAvailabilityResponse> => {
+    const response = await fetch(
+      `/api/appointments/availability?date=${dateIso}&barber=${encodeURIComponent(barber)}`,
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to load day availability");
+    }
+
+    return (await response.json()) as BatchedAvailabilityResponse;
+  }, []);
+
+  const loadMonthAvailability = useCallback(async (monthIso: string, barber: string): Promise<MonthlyAvailabilityResponse> => {
+    const response = await fetch(
+      `/api/appointments/availability?month=${monthIso}&barber=${encodeURIComponent(barber)}`,
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to load month availability");
+    }
+
+    return (await response.json()) as MonthlyAvailabilityResponse;
+  }, []);
+
+  // Load building hours from database (source of truth for slot generation)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBuildingHours() {
+      try {
+        const response = await fetch("/api/building-hours", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("Failed to load building hours");
+        }
+
+        const data = (await response.json()) as BuildingHoursEntry[];
+        if (!cancelled) {
+          setBuildingHoursByWeekday(createBuildingHoursByWeekday(data));
+        }
+      } catch (error) {
+        console.error("Failed to load building hours:", error);
+        if (!cancelled) {
+          setBuildingHoursByWeekday({});
+        }
+      } finally {
+        if (!cancelled) {
+          setHasLoadedBuildingHours(true);
+        }
+      }
+    }
+
+    void loadBuildingHours();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBarbers() {
+      try {
+        const response = await fetch("/api/staff?activeOnly=true", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("Failed to load staff");
+        }
+
+        const data = (await response.json()) as StaffMember[];
+        const nextBarbers = data
+          .filter((member) => member.isActive)
+          .map((member) => member.name.trim())
+          .filter(Boolean);
+
+        if (!cancelled) {
+          setBarbers(nextBarbers.length > 0 ? nextBarbers : fallbackBarbers);
+        }
+      } catch (error) {
+        console.error("Failed to load barbers:", error);
+        if (!cancelled) {
+          setBarbers(fallbackBarbers);
+        }
+      } finally {
+        if (!cancelled) {
+          setHasLoadedBarbers(true);
+        }
+      }
+    }
+
+    void loadBarbers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBarberAvailability() {
+      if (!hasLoadedBuildingHours) {
+        return;
+      }
+
+      if (!selectedDate || barbers.length === 0) {
+        setBarberAvailability({});
+        setAggregateTimeAvailability({});
+        setBarberTimeAvailability({});
+        return;
+      }
+
+      const dateIso = toDateIso(selectedDate);
+      const daySlots = getAvailableTimes(selectedDate, currentMoment);
+
+      if (daySlots.length === 0) {
+        setBarberAvailability(Object.fromEntries(barbers.map((barber) => [barber, false])));
+        setAggregateTimeAvailability({});
+        setBarberTimeAvailability({});
+        return;
+      }
+
+      try {
+        const results = await Promise.all(
+          barbers.map(async (barber) => {
+            const data = await loadDayAvailability(dateIso, barber).catch(
+              (): BatchedAvailabilityResponse => ({ hours: {} }),
+            );
+            const isAvailable = daySlots.some(
+              (slot) => data.hours?.[String(slot.hour)]?.available === true,
+            );
+
+            const availableHours = Object.fromEntries(
+              daySlots.map((slot) => [slot.hour, data.hours?.[String(slot.hour)]?.available === true]),
+            );
+
+            return [barber, isAvailable, availableHours] as const;
+          }),
+        );
+
+        if (!cancelled) {
+          setBarberAvailability(Object.fromEntries(results.map(([barber, isAvailable]) => [barber, isAvailable])));
+          setBarberTimeAvailability(
+            Object.fromEntries(
+              results.map(([barber, , availableHours]) => [barber, availableHours as Record<number, boolean>]),
+            ) as Record<string, Record<number, boolean>>,
+          );
+          setAggregateTimeAvailability(
+            Object.fromEntries(
+              daySlots.map((slot) => [
+                slot.hour,
+                results.some(([, , availableHours]) => (availableHours as Record<string, boolean>)[String(slot.hour)] === true),
+              ]),
+            ),
+          );
+        }
+      } catch (error) {
+        console.error("Failed to load barber availability:", error);
+        if (!cancelled) {
+          setBarberAvailability(
+            Object.fromEntries(barbers.map((barber) => [barber, false])),
+          );
+          setBarberTimeAvailability({});
+          setAggregateTimeAvailability(
+            Object.fromEntries(daySlots.map((slot) => [slot.hour, false])),
+          );
+        }
+      }
+    }
+
+    void loadBarberAvailability();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [barbers, selectedDate, getAvailableTimes, currentMoment, hasLoadedBuildingHours, loadDayAvailability]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCalendarAvailability() {
+      if (barbers.length === 0) {
+        setCalendarAvailability({});
+        return;
+      }
+
+      try {
+        const monthIso = toMonthIso(visibleMonth);
+
+        if (selectedBarber && barbers.includes(selectedBarber)) {
+          const data = await loadMonthAvailability(monthIso, selectedBarber);
+
+          if (!cancelled) {
+            setCalendarAvailability(
+              Object.fromEntries(
+                Object.entries(data.dates ?? {}).map(([dateIso, result]) => [dateIso, result.available !== false]),
+              ),
+            );
+          }
+
+          return;
+        }
+
+        const results = await Promise.all(
+          barbers.map(async (barber) => {
+            return loadMonthAvailability(monthIso, barber).catch(() => null);
+          }),
+        );
+
+        const allDates = new Set(
+          results.flatMap((result) => Object.keys(result?.dates ?? {})),
+        );
+
+        const aggregatedAvailability = Object.fromEntries(
+          Array.from(allDates).map((dateIso) => [
+            dateIso,
+            results.some((result) => result?.dates?.[dateIso]?.available === true),
+          ]),
+        );
+
+        if (!cancelled) {
+          setCalendarAvailability(aggregatedAvailability);
+        }
+      } catch (error) {
+        console.error("Failed to load calendar availability:", error);
+        if (!cancelled) {
+          setCalendarAvailability({});
+        }
+      }
+    }
+
+    void loadCalendarAvailability();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [barbers, selectedBarber, visibleMonth, loadMonthAvailability]);
+
+  // When date and barber are selected, validate time slots via API
+  useEffect(() => {
+    let cancelled = false;
+
+    async function validateSlots() {
+      if (!selectedDate || !selectedBarber || !barbers.includes(selectedBarber)) {
+        setValidatedAvailability({});
+        return;
+      }
+
+      const dateIso = toDateIso(selectedDate);
+
+      try {
+        const data = await loadDayAvailability(dateIso, selectedBarber);
+        const daySlots = getTimeSlotsForDate(selectedDate);
+
+        if (!cancelled) {
+          setValidatedAvailability(
+            Object.fromEntries(
+              daySlots.map((slot) => [slot.hour, data.hours?.[String(slot.hour)]?.available !== false]),
+            ),
+          );
+        }
+      } catch (error) {
+        console.error("Failed to check availability:", error);
+        const daySlots = getTimeSlotsForDate(selectedDate);
+        if (!cancelled) {
+          setValidatedAvailability(
+            Object.fromEntries(daySlots.map((slot) => [slot.hour, false])),
+          );
+        }
+      }
+    }
+
+    void validateSlots();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDate, selectedBarber, barbers, getTimeSlotsForDate, loadDayAvailability]);
+
+  useEffect(() => {
+    if (!hasLoadedBarbers) {
+      return;
+    }
+
+    if (hasAppliedQueryPrefill.current) {
+      return;
+    }
+
+    const selection = getBookingSelectionFromParams(
+      new URLSearchParams(window.location.search),
+      currentMoment,
+      barbers,
+    );
+    setSelectedServices(selection.services);
+    setSelectedBarber(selection.barber);
+    setSelectedDate(selection.date);
+    setSelectedTime(selection.time);
+    setVisibleMonth(startOfMonth(selection.date ?? getInitialBookingDate(currentMoment)));
+    hasAppliedQueryPrefill.current = true;
+  }, [barbers, currentMoment, getBookingSelectionFromParams, getInitialBookingDate, hasLoadedBarbers]);
+
+  const effectiveSelectedBarber = useMemo(
+    () => (selectedBarber !== "" && barbers.includes(selectedBarber) ? selectedBarber : ""),
+    [barbers, selectedBarber],
+  );
+
+  const effectiveSelectedDate = useMemo(() => {
+    if (!selectedDate) {
+      return null;
+    }
+
+    if (calendarAvailability[toDateIso(selectedDate)] === false) {
+      return null;
+    }
+
+    return selectedDate;
+  }, [calendarAvailability, selectedDate]);
 
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(visibleMonth);
@@ -147,92 +600,99 @@ export default function BookPage() {
     });
   }, [visibleMonth]);
 
-  const availableTimes = useMemo(
-    () => (selectedDate ? getAvailableTimes(selectedDate, currentMoment) : []),
-    [selectedDate, currentMoment],
+  const visibleTimes = useMemo(
+    () => {
+      if (!effectiveSelectedDate) {
+        return [];
+      }
+
+      return getAvailableTimes(effectiveSelectedDate, currentMoment);
+    },
+    [effectiveSelectedDate, currentMoment, getAvailableTimes],
   );
+
+  const selectedTimeHour = useMemo(() => {
+    const matchingVisibleSlot = visibleTimes.find((slot) => slot.label === selectedTime);
+    return matchingVisibleSlot?.hour ?? null;
+  }, [selectedTime, visibleTimes]);
+
+  const prevValidationRef = useRef<{ timeValid: boolean; barberValid: boolean }>({ timeValid: true, barberValid: true });
+
+  useEffect(() => {
+    if (!selectedTime) {
+      prevValidationRef.current.timeValid = true;
+      return;
+    }
+
+    const matchingVisibleSlot = visibleTimes.find((slot) => slot.label === selectedTime);
+    const isValid = !(matchingVisibleSlot && effectiveSelectedBarber !== "" && validatedAvailability[matchingVisibleSlot.hour] === false);
+    
+    if (isValid !== prevValidationRef.current.timeValid && !isValid) {
+      setSelectedTime("");
+    }
+    prevValidationRef.current.timeValid = isValid;
+  }, [effectiveSelectedBarber, selectedTime, validatedAvailability, visibleTimes]);
+
+  useEffect(() => {
+    if (selectedBarber === "" || selectedTimeHour === null) {
+      prevValidationRef.current.barberValid = true;
+      return;
+    }
+
+    const isValid = !(barberTimeAvailability[selectedBarber]?.[selectedTimeHour] === false);
+    if (isValid !== prevValidationRef.current.barberValid && !isValid) {
+      setSelectedBarber("");
+    }
+    prevValidationRef.current.barberValid = isValid;
+  }, [barberTimeAvailability, selectedBarber, selectedTimeHour]);
+
+  const selectableTimes = useMemo(
+    () => {
+      if (!effectiveSelectedBarber) {
+        return [];
+      }
+
+      return visibleTimes.filter((slot) => validatedAvailability[slot.hour] === true);
+    },
+    [effectiveSelectedBarber, validatedAvailability, visibleTimes],
+  );
+
+  const hasValidSelectedTime = selectedTime !== "" && selectableTimes.some((slot) => slot.label === selectedTime);
+  const isSelectedDateToday = effectiveSelectedDate !== null && isSameDay(effectiveSelectedDate, currentMoment);
+  const hasNoRemainingTimesToday = isSelectedDateToday && visibleTimes.length === 0;
 
   const monthLabel = visibleMonth.toLocaleDateString("en-US", {
     month: "long",
     year: "numeric",
   });
 
-  const selectedDateLabel = selectedDate
-    ? selectedDate.toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-      })
-    : "Not selected";
-
   const canViewPreviousMonth = startOfMonth(visibleMonth) > startOfMonth(currentMoment);
   const canContinue =
-    selectedDate !== null &&
+    effectiveSelectedDate !== null &&
     selectedServices.length > 0 &&
-    selectedBarber !== "" &&
-    selectedTime !== "";
+    effectiveSelectedBarber !== "" &&
+    hasValidSelectedTime;
 
   const confirmationHref = `/book/confirmation?date=${encodeURIComponent(
-    selectedDate?.toISOString() ?? "",
+    effectiveSelectedDate ? toDateIso(effectiveSelectedDate) : "",
   )}&service=${encodeURIComponent(selectedServices.join(", "))}&barber=${encodeURIComponent(
-    selectedBarber,
+    effectiveSelectedBarber,
   )}&time=${encodeURIComponent(selectedTime)}`;
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-6 py-8 sm:px-8 lg:px-12">
-      <section className="grid gap-6 rounded-[2rem] border border-[var(--border)] bg-[color:rgba(248,237,220,0.92)] p-8 shadow-[0_24px_80px_rgba(66,24,22,0.12)] md:grid-cols-[1.1fr_0.9fr]">
-        <div className="space-y-5">
-          <span className="inline-flex rounded-full border border-[var(--border)] bg-[var(--accent-soft)] px-4 py-1 text-sm font-medium text-[var(--accent-strong)]">
-            Customer booking calendar
-          </span>
-          <div className="space-y-3">
-            <h1 className="max-w-3xl text-5xl font-semibold tracking-[-0.04em] text-[var(--foreground)] sm:text-6xl">
-              Select a day, then lock in your time.
-            </h1>
-            <p className="max-w-2xl text-lg leading-8 text-[var(--muted)]">
-              Admin scheduling is not set up yet, so every day is currently open. Customers can choose any date and book between 6:00 AM and 8:00 PM.
-            </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4">
-              <p className="text-sm text-[var(--muted)]">Selected date</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">{selectedDateLabel}</p>
-            </div>
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4">
-              <p className="text-sm text-[var(--muted)]">Open hours</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">6:00 AM - 8:00 PM</p>
-            </div>
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4">
-              <p className="text-sm text-[var(--muted)]">Booking status</p>
-              <p className="mt-2 text-lg font-semibold text-[var(--foreground)]">
-                {canContinue ? "Ready to continue" : "Select date, service, barber, and time"}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <aside className="rounded-[1.75rem] bg-[radial-gradient(circle_at_top,_rgba(240,196,108,0.2),_rgba(255,255,255,0)_56%),linear-gradient(135deg,var(--panel),#3d0d16)] p-6 text-[var(--surface)] shadow-inner">
-          <p className="text-sm uppercase tracking-[0.3em] text-[var(--panel-highlight)]">
-            Current selection
+    <main className="w-full min-h-screen bg-[radial-gradient(circle_at_top_center,rgba(255,255,255,0.22),transparent_34%),linear-gradient(180deg,#efefef_0%,var(--section-sand)_100%)]">
+      <div className="site-shell flex flex-col gap-8 py-[clamp(2.5rem,5vw,4.5rem)]">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
+            Customer booking
           </p>
-          <div className="mt-5 space-y-3 rounded-[1.5rem] border border-[color:rgba(244,228,195,0.14)] bg-[var(--panel-card)] p-4">
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Service</span>
-              <span className="text-sm font-medium text-[var(--surface)]">
-                {selectedServices.length > 0 ? selectedServices.join(", ") : "Not selected"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Barber</span>
-              <span className="text-sm font-medium text-[var(--surface)]">{selectedBarber}</span>
-            </div>
-            <div className="flex items-center justify-between rounded-2xl bg-[var(--panel-card-strong)] px-4 py-3">
-              <span className="text-sm text-[var(--panel-text-muted)]">Time</span>
-              <span className="text-sm font-medium text-[var(--panel-highlight)]">{selectedTime}</span>
-            </div>
-          </div>
-        </aside>
-      </section>
+          <h1 className="mt-2 text-[clamp(2rem,4vw,3.5rem)] font-bold leading-tight tracking-tight text-[var(--foreground)]">
+            Book your appointment
+          </h1>
+          <p className="mt-2 text-lg text-[var(--muted)]">
+            Pick a date, choose your service and barber, then lock in a time.
+          </p>
+        </div>
 
       <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <section className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm">
@@ -276,8 +736,12 @@ export default function BookPage() {
                 return <div key={`empty-${index}`} className="aspect-square rounded-2xl" />;
               }
 
-              const unavailable = !hasAvailableTimes(day, currentMoment);
-              const selected = selectedDate ? isSameDay(day, selectedDate) : false;
+              const isPastDay = startOfDay(day).getTime() < startOfDay(currentMoment).getTime();
+              const hasBuildingSlots = !hasLoadedBuildingHours || getTimeSlotsForDate(day).length > 0;
+              const unavailable = isPastDay
+                || !hasBuildingSlots
+                || calendarAvailability[toDateIso(day)] === false;
+              const selected = effectiveSelectedDate ? isSameDay(day, effectiveSelectedDate) : false;
 
               return (
                 <button
@@ -292,6 +756,12 @@ export default function BookPage() {
                   type="button"
                   disabled={unavailable}
                   onClick={() => {
+                    if (selected) {
+                      setSelectedDate(null);
+                      setSelectedTime("");
+                      return;
+                    }
+
                     setSelectedDate(day);
 
                     if (!getAvailableTimes(day, currentMoment).some((slot) => slot.label === selectedTime)) {
@@ -307,7 +777,7 @@ export default function BookPage() {
         </section>
 
         <aside className="rounded-[1.75rem] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm">
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--muted)]">
+          <p className="text-sm font-medium uppercase tracking-[0.18em] text-[var(--accent)]">
             Booking details
           </p>
           <div className="mt-5 space-y-5">
@@ -337,41 +807,105 @@ export default function BookPage() {
               <p className="text-sm font-medium text-[var(--accent)]">Choose a barber</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {barbers.map((barber) => (
+                  (() => {
+                    const isUnavailableForDate = effectiveSelectedDate !== null && barberAvailability[barber] === false;
+                    const isUnavailableForSelectedTime = selectedTimeHour !== null && barberTimeAvailability[barber]?.[selectedTimeHour] === false;
+                    const isUnavailable = isUnavailableForDate || isUnavailableForSelectedTime;
+
+                    return (
                   <button
                     key={barber}
-                    className={barber === selectedBarber ? primaryButtonClassName : secondaryButtonClassName}
+                    className={isUnavailable
+                      ? `${secondaryButtonClassName} cursor-not-allowed border-[var(--border)] bg-[color:rgba(239,223,198,0.45)] text-[var(--muted)] opacity-50 hover:bg-[color:rgba(239,223,198,0.45)]`
+                      : barber === effectiveSelectedBarber
+                      ? primaryButtonClassName
+                      : secondaryButtonClassName}
                     type="button"
-                    onClick={() => setSelectedBarber(barber)}
+                    disabled={isUnavailable}
+                    onClick={() => {
+                      setSelectedBarber((currentBarber) => currentBarber === barber ? "" : barber);
+                    }}
+                    aria-disabled={isUnavailable}
                   >
                     {barber}
                   </button>
+                    );
+                  })()
                 ))}
               </div>
+              {effectiveSelectedDate ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Staff without availability on this date are greyed out.
+                </p>
+              ) : null}
+              {hasLoadedBarbers && barbers.length === 0 ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  No active staff are available to book right now.
+                </p>
+              ) : null}
             </div>
 
             <div>
               <p className="text-sm font-medium text-[var(--accent)]">Available times</p>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                Open every day from 6:00 AM to 8:00 PM. Past times are automatically removed.
-              </p>
-              {!selectedDate ? (
-                <p className="mt-3 text-sm font-medium text-[var(--accent-strong)]">
-                  Select a date first to view available times.
+              {effectiveSelectedDate && !hasLoadedBuildingHours ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Loading building hours...
                 </p>
               ) : null}
-              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {availableTimes.map((time) => (
-                  <button
-                    key={time.label}
-                    className={time.label === selectedTime ? primaryButtonClassName : secondaryButtonClassName}
-                    type="button"
-                    onClick={() => setSelectedTime(time.label)}
-                  >
-                    {time.label}
-                  </button>
-                ))}
+              {!effectiveSelectedDate ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Select a date to see available times.
+                </p>
+              ) : null}
+              {effectiveSelectedDate && !effectiveSelectedBarber ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Available times stay active below. Select a barber to confirm and choose one.
+                </p>
+              ) : null}
+              {hasNoRemainingTimesToday ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  No remaining slots today. Current time is {formatTimeForDisplay(currentMoment)} and today&apos;s configured hours have ended.
+                </p>
+              ) : null}
+              {effectiveSelectedBarber && !effectiveSelectedDate ? (
+                <p className="mt-2 text-sm text-[var(--muted)]">
+                  Days that {effectiveSelectedBarber} is off are disabled on the calendar.
+                </p>
+              ) : null}
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                {visibleTimes.map((time) => {
+                  const isAvailable = effectiveSelectedBarber !== ""
+                    ? validatedAvailability[time.hour] === true
+                    : aggregateTimeAvailability[time.hour] === true;
+                  const isSelectable = isAvailable;
+                  const isSelected = isAvailable && time.label === selectedTime;
+
+                  return (
+                    <button
+                      key={time.label}
+                      type="button"
+                      disabled={!isSelectable}
+                      onClick={() => {
+                        if (!isSelectable) {
+                          return;
+                        }
+
+                        setSelectedTime((current) => current === time.label ? "" : time.label);
+                      }}
+                      className={`rounded-xl border py-2 text-center text-sm font-semibold transition ${
+                        !isAvailable
+                          ? "cursor-not-allowed border-[var(--border)] bg-[color:rgba(239,223,198,0.45)] text-[var(--muted)] opacity-60"
+                          : isSelected
+                          ? "border-[var(--accent-strong)] bg-[var(--button-primary)] text-[var(--surface)]"
+                          : "border-[var(--border)] bg-[var(--surface-soft)] text-[var(--foreground)] hover:bg-[var(--button-secondary)]"
+                      }`}
+                    >
+                      {time.label}
+                    </button>
+                  );
+                })}
               </div>
-              {selectedDate && availableTimes.length === 0 ? (
+              {effectiveSelectedDate && effectiveSelectedBarber && hasLoadedBuildingHours && selectableTimes.length === 0 ? (
                 <p className="mt-3 text-sm font-medium text-[var(--accent-strong)]">
                   There are no remaining bookable times for this day. Please choose another date.
                 </p>
@@ -390,6 +924,7 @@ export default function BookPage() {
           </div>
         </aside>
       </section>
+      </div>
     </main>
   );
 }

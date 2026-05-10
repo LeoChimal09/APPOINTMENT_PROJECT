@@ -25,6 +25,8 @@ function getPool() {
   return globalThis.__cuttingEdgeMysqlPool;
 }
 
+export { getPool };
+
 export function getDb() {
   return drizzle(getPool());
 }

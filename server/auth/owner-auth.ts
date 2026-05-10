@@ -1,4 +1,15 @@
 import { NextRequest } from "next/server";
+import { timingSafeEqual } from "crypto";
+import { getToken } from "next-auth/jwt";
+import { isAdminEmail } from "@/lib/auth";
+
+function isLegacyOwnerTokenAuthEnabled() {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+
+  return process.env.ALLOW_LEGACY_OWNER_TOKEN_AUTH === "true";
+}
 
 function getConfiguredOwnerToken() {
   const token = process.env.OWNER_DASHBOARD_TOKEN?.trim();
@@ -24,7 +35,25 @@ function getPresentedOwnerToken(request: NextRequest) {
   return authorizationHeader.slice(bearerPrefix.length).trim() || null;
 }
 
-export function isOwnerAuthorized(request: NextRequest) {
+export async function isOwnerAuthorized(request: NextRequest) {
+  const authToken = await getToken({
+    req: request,
+    secret: process.env.NEXTAUTH_SECRET,
+  }).catch(() => null);
+
+  const sessionEmail =
+    typeof authToken?.email === "string" ? authToken.email.trim().toLowerCase() : null;
+
+  if (isAdminEmail(sessionEmail)) {
+    return true;
+  }
+
+  // Legacy owner-token auth is available only in non-production and only
+  // when explicitly enabled.
+  if (!isLegacyOwnerTokenAuthEnabled()) {
+    return false;
+  }
+
   const configuredToken = getConfiguredOwnerToken();
   if (!configuredToken) {
     return false;
@@ -35,5 +64,12 @@ export function isOwnerAuthorized(request: NextRequest) {
     return false;
   }
 
-  return presentedToken === configuredToken;
+  // Use constant-time comparison to prevent timing attacks.
+  const configuredBuf = Buffer.from(configuredToken, "utf8");
+  const presentedBuf = Buffer.from(presentedToken, "utf8");
+  if (configuredBuf.length !== presentedBuf.length) {
+    return false;
+  }
+
+  return timingSafeEqual(configuredBuf, presentedBuf);
 }
