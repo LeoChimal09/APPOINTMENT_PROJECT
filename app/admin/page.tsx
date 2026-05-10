@@ -15,13 +15,6 @@ const modules = [
     cta: "Manage staff",
     status: "Live",
   },
-  {
-    name: "Building",
-    description: "Set operating hours and business settings.",
-    href: "/admin/staff?tab=building",
-    cta: "Manage building hours",
-    status: "Live",
-  },
 ];
 
 export default function AdminPage() {
@@ -39,7 +32,7 @@ export default function AdminPage() {
         </p>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-2">
         {modules.map((module) => (
           <article
             key={module.name}

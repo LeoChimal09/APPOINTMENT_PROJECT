@@ -273,7 +273,7 @@ export default function Home() {
 
     async function loadHomeHours() {
       try {
-        const response = await fetch("/api/admin/building-hours", { cache: "no-store" });
+        const response = await fetch("/api/building-hours", { cache: "no-store" });
         if (!response.ok) {
           return;
         }
@@ -539,17 +539,6 @@ export default function Home() {
               <p id="hours" className="mt-1 text-sm text-[var(--muted)]">
                 Open daily from 6:00 AM to 8:00 PM for appointments and walk-ins.
               </p>
-              </div>
-
-              <div className="flex w-full max-w-xl items-center gap-3 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-3 lg:w-[min(34vw,30rem)]">
-                <svg className="h-4 w-4 flex-shrink-0 text-[var(--muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                <input
-                  type="text"
-                  placeholder="Search services..."
-                  className="w-full bg-transparent text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted)]"
-                />
               </div>
             </div>
           </section>
@@ -865,7 +854,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="home-band home-band--sand">
+      <section className="home-band home-band--canvas">
         <div className="site-shell">
           {/* Services Section - Auto Carousel */}
           <section id="services" className="py-2">
@@ -877,6 +866,20 @@ export default function Home() {
                 <h2 className="section-heading mt-2 font-bold text-[var(--foreground)]">
                   Choose your service
                 </h2>
+              </div>
+
+              <div className="border-y border-[var(--border)] bg-[var(--surface)]">
+                <ul role="list" className="divide-y divide-[var(--border)]">
+                  {services.map((service) => (
+                    <li key={`${service.title}-menu`} className="px-4 py-4 sm:px-6">
+                      <div className="flex items-baseline justify-between gap-4">
+                        <h3 className="text-lg font-semibold text-[var(--foreground)]">{service.title}</h3>
+                        <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">{service.duration}</p>
+                      </div>
+                      <p className="mt-1 text-sm text-[var(--muted)]">{service.description}</p>
+                    </li>
+                  ))}
+                </ul>
               </div>
 
               {/* Slideshow */}
@@ -927,7 +930,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="home-band home-band--emerald">
+      <section className="home-band home-band--ivory">
         <div className="site-shell">
           {/* Staff Directory Section */}
           <section>
@@ -996,7 +999,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="home-band home-band--emerald-soft">
+      <section className="home-band home-band--canvas">
         <div className="site-shell">
           {/* Testimonials Section - Quote Led */}
           <section className="py-2">
@@ -1047,27 +1050,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="home-band home-band--rose">
-        <div className="site-shell">
-          {/* CTA Section */}
-          <section className="section-card rounded-[2rem] border border-[var(--border)] bg-[linear-gradient(135deg,var(--surface-soft),var(--surface))] text-center shadow-sm">
-            <h2 className="section-heading font-bold text-[var(--foreground)]">
-              Ready for your next cut?
-            </h2>
-            <p className="mt-4 text-lg text-[var(--muted)]">
-              Book in seconds. No waiting. Great haircuts, every time.
-            </p>
-            <Link
-              href="/book"
-              className="mt-8 inline-flex items-center justify-center rounded-full bg-[var(--button-primary)] px-8 py-3 text-base font-semibold text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
-            >
-              Book an appointment
-            </Link>
-          </section>
-        </div>
-      </section>
-
-      <section className="home-band home-band--canvas">
+      <section className="home-band home-band--ivory">
         <div className="site-shell">
           <section className="flex flex-col gap-5 border-t border-[rgba(100,19,32,0.14)] py-5 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">

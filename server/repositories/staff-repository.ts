@@ -1,9 +1,7 @@
 import { eq } from "drizzle-orm";
-import type { RowDataPacket } from "mysql2/promise";
 import { getDb, getPool } from "@/server/db/client";
 import {
   staffMembersTable,
-  staffUnavailabilityTable,
   staffWeeklyAvailabilityTable,
 } from "@/server/db/schema";
 
@@ -11,18 +9,6 @@ export type StaffMember = {
   id: number;
   name: string;
   isActive: boolean;
-};
-
-export type StaffUnavailability = {
-  id: number;
-  staffId: number;
-  dateIso: string;
-  endDateIso: string;
-  startTime: string | null;
-  endTime: string | null;
-  isAllDay: boolean;
-  reason: string;
-  createdAt: string;
 };
 
 export type StaffWeeklyAvailability = {
@@ -68,64 +54,6 @@ async function ensureStaffSchema() {
           created_at VARCHAR(40) NOT NULL
         )
       `);
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS staff_unavailability (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          staff_id INT NOT NULL,
-          date_iso VARCHAR(40) NOT NULL,
-          reason VARCHAR(255) NOT NULL DEFAULT 'Unavailable',
-          created_at VARCHAR(40) NOT NULL
-        )
-      `);
-
-      const [existingColumns] = await pool.query<RowDataPacket[]>(`
-        SELECT COLUMN_NAME
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 'staff_unavailability'
-          AND COLUMN_NAME IN ('end_date_iso', 'start_time', 'end_time', 'is_all_day')
-      `);
-
-      const columnNames = new Set(
-        (existingColumns as Array<{ COLUMN_NAME: string }>)
-          .map((row) => row.COLUMN_NAME?.toLowerCase())
-          .filter(Boolean),
-      );
-
-      if (!columnNames.has("end_date_iso")) {
-        await pool.query(`
-          ALTER TABLE staff_unavailability
-          ADD COLUMN end_date_iso VARCHAR(40) NOT NULL DEFAULT ''
-        `);
-      }
-
-      if (!columnNames.has("start_time")) {
-        await pool.query(`
-          ALTER TABLE staff_unavailability
-          ADD COLUMN start_time VARCHAR(20) NULL
-        `);
-      }
-
-      if (!columnNames.has("end_time")) {
-        await pool.query(`
-          ALTER TABLE staff_unavailability
-          ADD COLUMN end_time VARCHAR(20) NULL
-        `);
-      }
-
-      if (!columnNames.has("is_all_day")) {
-        await pool.query(`
-          ALTER TABLE staff_unavailability
-          ADD COLUMN is_all_day BOOLEAN NOT NULL DEFAULT TRUE
-        `);
-      }
-
-      await pool.query(`
-        UPDATE staff_unavailability
-        SET end_date_iso = date_iso
-        WHERE end_date_iso = '' OR end_date_iso IS NULL
-      `);
     })().catch((error) => {
       ensuredStaffSchemaPromise = null;
       throw error;
@@ -155,10 +83,6 @@ function parseTimeLabelToMinutes(value: string) {
   }
 
   return (hour * 60) + minutes;
-}
-
-function isDateWithinRange(dateIso: string, startDateIso: string, endDateIso: string) {
-  return dateIso >= startDateIso && dateIso <= endDateIso;
 }
 
 function getWeekdayFromDateIso(dateIso: string) {
@@ -253,47 +177,6 @@ export async function updateStaffMember(id: number, isActive: boolean): Promise<
   return row ? { id: row.id, name: row.name, isActive: row.isActive } : undefined;
 }
 
-export async function markStaffUnavailable(
-  staffId: number,
-  dateIso: string,
-  endDateIso: string,
-  startTime: string | null,
-  endTime: string | null,
-  isAllDay: boolean,
-  reason: string
-): Promise<StaffUnavailability> {
-  await ensureStaffSchema();
-  const db = getDb();
-  const createdAt = new Date().toISOString();
-  const result = await db.insert(staffUnavailabilityTable).values({
-    staffId,
-    dateIso,
-    endDateIso,
-    startTime,
-    endTime,
-    isAllDay,
-    reason: reason.trim(),
-    createdAt,
-  });
-
-  const id = result[0]?.insertId as number | undefined;
-  if (!id) {
-    throw new Error("Failed to mark staff unavailable");
-  }
-
-  return {
-    id,
-    staffId,
-    dateIso,
-    endDateIso,
-    startTime,
-    endTime,
-    isAllDay,
-    reason: reason.trim(),
-    createdAt,
-  };
-}
-
 export async function getStaffWeeklyAvailability(
   staffId: number,
 ): Promise<StaffWeeklyAvailability[]> {
@@ -348,47 +231,6 @@ export async function replaceStaffWeeklyAvailability(
   return getStaffWeeklyAvailability(staffId);
 }
 
-export async function isStaffUnavailableAt(
-  staffId: number,
-  dateIso: string,
-  time: string,
-): Promise<boolean> {
-  await ensureStaffSchema();
-  const db = getDb();
-  const rows = await db
-    .select()
-    .from(staffUnavailabilityTable)
-    .where(eq(staffUnavailabilityTable.staffId, staffId));
-
-  const appointmentMinutes = parseTimeLabelToMinutes(time);
-
-  return rows.some((row) => {
-    const endDateIso = row.endDateIso || row.dateIso;
-
-    if (!isDateWithinRange(dateIso, row.dateIso, endDateIso)) {
-      return false;
-    }
-
-    if (row.isAllDay) {
-      return true;
-    }
-
-    if (appointmentMinutes === null || !row.startTime || !row.endTime) {
-      return false;
-    }
-
-    const startMinutes = parseTimeLabelToMinutes(row.startTime);
-    const endMinutes = parseTimeLabelToMinutes(row.endTime);
-
-    if (startMinutes === null || endMinutes === null) {
-      return false;
-    }
-
-    return appointmentMinutes >= startMinutes && appointmentMinutes < endMinutes;
-  });
-
-}
-
 export async function isStaffAvailableForAppointment(
   staffName: string,
   dateIso: string,
@@ -431,15 +273,12 @@ export async function isStaffAvailableForAppointment(
     }
   }
 
-  return !(await isStaffUnavailableAt(matchedStaff.id, dateIso, time));
+  return true;
 }
 
 export async function deleteStaffMember(id: number): Promise<boolean> {
   await ensureStaffSchema();
   const db = getDb();
-
-  // Delete related unavailability records
-  await db.delete(staffUnavailabilityTable).where(eq(staffUnavailabilityTable.staffId, id));
 
   // Delete related weekly availability records
   await db.delete(staffWeeklyAvailabilityTable).where(eq(staffWeeklyAvailabilityTable.staffId, id));

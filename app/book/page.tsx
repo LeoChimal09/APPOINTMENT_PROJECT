@@ -268,13 +268,37 @@ export default function BookPage() {
     dates: Record<string, { available: boolean }>;
   };
 
+  const loadDayAvailability = useCallback(async (dateIso: string, barber: string): Promise<BatchedAvailabilityResponse> => {
+    const response = await fetch(
+      `/api/appointments/availability?date=${dateIso}&barber=${encodeURIComponent(barber)}`,
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to load day availability");
+    }
+
+    return (await response.json()) as BatchedAvailabilityResponse;
+  }, []);
+
+  const loadMonthAvailability = useCallback(async (monthIso: string, barber: string): Promise<MonthlyAvailabilityResponse> => {
+    const response = await fetch(
+      `/api/appointments/availability?month=${monthIso}&barber=${encodeURIComponent(barber)}`,
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to load month availability");
+    }
+
+    return (await response.json()) as MonthlyAvailabilityResponse;
+  }, []);
+
   // Load building hours from database (source of truth for slot generation)
   useEffect(() => {
     let cancelled = false;
 
     async function loadBuildingHours() {
       try {
-        const response = await fetch("/api/admin/building-hours", { cache: "no-store" });
+        const response = await fetch("/api/building-hours", { cache: "no-store" });
         if (!response.ok) {
           throw new Error("Failed to load building hours");
         }
@@ -368,15 +392,9 @@ export default function BookPage() {
       try {
         const results = await Promise.all(
           barbers.map(async (barber) => {
-            const response = await fetch(
-              `/api/appointments/availability?date=${dateIso}&barber=${encodeURIComponent(barber)}`,
+            const data = await loadDayAvailability(dateIso, barber).catch(
+              (): BatchedAvailabilityResponse => ({ hours: {} }),
             );
-
-            if (!response.ok) {
-              return [barber, false, {}] as const;
-            }
-
-            const data = (await response.json()) as BatchedAvailabilityResponse;
             const isAvailable = daySlots.some(
               (slot) => data.hours?.[String(slot.hour)]?.available === true,
             );
@@ -424,7 +442,7 @@ export default function BookPage() {
     return () => {
       cancelled = true;
     };
-  }, [barbers, selectedDate, getAvailableTimes, currentMoment, hasLoadedBuildingHours]);
+  }, [barbers, selectedDate, getAvailableTimes, currentMoment, hasLoadedBuildingHours, loadDayAvailability]);
 
   useEffect(() => {
     let cancelled = false;
@@ -439,10 +457,7 @@ export default function BookPage() {
         const monthIso = toMonthIso(visibleMonth);
 
         if (selectedBarber && barbers.includes(selectedBarber)) {
-          const response = await fetch(
-            `/api/appointments/availability?month=${monthIso}&barber=${encodeURIComponent(selectedBarber)}`,
-          );
-          const data = (await response.json()) as MonthlyAvailabilityResponse;
+          const data = await loadMonthAvailability(monthIso, selectedBarber);
 
           if (!cancelled) {
             setCalendarAvailability(
@@ -457,15 +472,7 @@ export default function BookPage() {
 
         const results = await Promise.all(
           barbers.map(async (barber) => {
-            const response = await fetch(
-              `/api/appointments/availability?month=${monthIso}&barber=${encodeURIComponent(barber)}`,
-            );
-
-            if (!response.ok) {
-              return null;
-            }
-
-            return (await response.json()) as MonthlyAvailabilityResponse;
+            return loadMonthAvailability(monthIso, barber).catch(() => null);
           }),
         );
 
@@ -496,7 +503,7 @@ export default function BookPage() {
     return () => {
       cancelled = true;
     };
-  }, [barbers, selectedBarber, visibleMonth]);
+  }, [barbers, selectedBarber, visibleMonth, loadMonthAvailability]);
 
   // When date and barber are selected, validate time slots via API
   useEffect(() => {
@@ -511,10 +518,7 @@ export default function BookPage() {
       const dateIso = toDateIso(selectedDate);
 
       try {
-        const response = await fetch(
-          `/api/appointments/availability?date=${dateIso}&barber=${encodeURIComponent(selectedBarber)}`,
-        );
-        const data = (await response.json()) as BatchedAvailabilityResponse;
+        const data = await loadDayAvailability(dateIso, selectedBarber);
         const daySlots = getTimeSlotsForDate(selectedDate);
 
         if (!cancelled) {
@@ -540,7 +544,7 @@ export default function BookPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedDate, selectedBarber, barbers, getTimeSlotsForDate]);
+  }, [selectedDate, selectedBarber, barbers, getTimeSlotsForDate, loadDayAvailability]);
 
   useEffect(() => {
     if (!hasLoadedBarbers) {
@@ -648,7 +652,7 @@ export default function BookPage() {
         return [];
       }
 
-      return visibleTimes.filter((slot) => validatedAvailability[slot.hour] !== false);
+      return visibleTimes.filter((slot) => validatedAvailability[slot.hour] === true);
     },
     [effectiveSelectedBarber, validatedAvailability, visibleTimes],
   );
@@ -871,8 +875,8 @@ export default function BookPage() {
               <div className="mt-3 grid grid-cols-3 gap-2">
                 {visibleTimes.map((time) => {
                   const isAvailable = effectiveSelectedBarber !== ""
-                    ? validatedAvailability[time.hour] !== false
-                    : aggregateTimeAvailability[time.hour] !== false;
+                    ? validatedAvailability[time.hour] === true
+                    : aggregateTimeAvailability[time.hour] === true;
                   const isSelectable = isAvailable;
                   const isSelected = isAvailable && time.label === selectedTime;
 

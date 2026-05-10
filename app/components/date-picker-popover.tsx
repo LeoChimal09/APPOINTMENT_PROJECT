@@ -10,9 +10,18 @@ interface DatePickerPopoverProps {
   onChange: (isoDate: string) => void;
   label?: string;
   disabled?: boolean;
+  minDateIso?: string;
+  maxDateIso?: string;
 }
 
-export function DatePickerPopover({ value, onChange, label, disabled = false }: DatePickerPopoverProps) {
+export function DatePickerPopover({
+  value,
+  onChange,
+  label,
+  disabled = false,
+  minDateIso,
+  maxDateIso,
+}: DatePickerPopoverProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [displayValue, setDisplayValue] = useState(value);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -31,6 +40,9 @@ export function DatePickerPopover({ value, onChange, label, disabled = false }: 
   }, [isOpen]);
 
   const selectedDate = value ? parse(value, "yyyy-MM-dd", new Date()) : undefined;
+  const today = new Date(new Date().setHours(0, 0, 0, 0));
+  const minDate = minDateIso ? parse(minDateIso, "yyyy-MM-dd", new Date()) : undefined;
+  const maxDate = maxDateIso ? parse(maxDateIso, "yyyy-MM-dd", new Date()) : undefined;
 
   return (
     <div className="relative" ref={containerRef}>
@@ -61,7 +73,23 @@ export function DatePickerPopover({ value, onChange, label, disabled = false }: 
                 setIsOpen(false);
               }
             }}
-            disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+            disabled={(date) => {
+              const dateOnly = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+              if (dateOnly < today) {
+                return true;
+              }
+
+              if (minDate && dateOnly < minDate) {
+                return true;
+              }
+
+              if (maxDate && dateOnly > maxDate) {
+                return true;
+              }
+
+              return false;
+            }}
             classNames={{
               months: "flex flex-col gap-4",
               month: "w-full",

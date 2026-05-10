@@ -184,6 +184,59 @@ export async function updateAppointmentStatus(
   return getAppointment(ref);
 }
 
+export async function cancelAcceptedAppointmentsForBarberOnDate(
+  barber: string,
+  dateIso: string,
+  cancellationNote?: string | null,
+) {
+  await ensureAppointmentsSchema();
+  const db = getDb();
+
+  const rows = await db
+    .select()
+    .from(appointmentsTable)
+    .where(
+      and(
+        eq(appointmentsTable.barber, barber),
+        eq(appointmentsTable.appointmentDateIso, dateIso),
+        eq(appointmentsTable.status, "accepted"),
+      ),
+    );
+
+  if (rows.length === 0) {
+    return [] as AppointmentRecord[];
+  }
+
+  const trimmedNote = cancellationNote?.trim() ? cancellationNote.trim() : null;
+  const updatedAppointments: AppointmentRecord[] = [];
+
+  for (const row of rows) {
+    const nextNotes = trimmedNote
+      ? row.notes?.trim()
+        ? `${row.notes.trim()}\n\nAdmin cancellation note: ${trimmedNote}`
+        : `Admin cancellation note: ${trimmedNote}`
+      : row.notes;
+
+    await db
+      .update(appointmentsTable)
+      .set({
+        status: "cancelled",
+        notes: nextNotes,
+      })
+      .where(eq(appointmentsTable.ref, row.ref));
+
+    updatedAppointments.push(
+      toAppointmentRecord({
+        ...row,
+        status: "cancelled",
+        notes: nextNotes,
+      }),
+    );
+  }
+
+  return updatedAppointments;
+}
+
 export async function overwriteAppointmentDetails(
   ref: string,
   input: AppointmentRequestInput,

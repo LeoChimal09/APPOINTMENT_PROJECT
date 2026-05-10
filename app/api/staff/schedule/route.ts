@@ -4,6 +4,7 @@ import {
   getStaffWeeklyAvailability,
   replaceStaffWeeklyAvailability,
 } from "@/server/repositories/staff-repository";
+import { getBuildingHours, initializeDefaultBuildingHours } from "@/server/db/building-hours-repository";
 
 const timeLabelPattern = /^\d{1,2}:\d{2}\s(?:AM|PM)$/i;
 
@@ -69,6 +70,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "A full 7-day schedule is required" }, { status: 400 });
   }
 
+  const weekdaySet = new Set<number>();
+
   const normalizedEntries: Array<{
     weekday: number;
     startTime: string;
@@ -86,6 +89,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Each schedule entry must use weekdays 0 through 6" }, { status: 400 });
     }
 
+    if (weekdaySet.has(weekday)) {
+      return NextResponse.json({ error: "Each weekday must appear only once" }, { status: 400 });
+    }
+    weekdaySet.add(weekday);
+
     if (!timeLabelPattern.test(startTime) || !timeLabelPattern.test(endTime)) {
       return NextResponse.json({ error: "Invalid time format. Use values like 9:00 AM." }, { status: 400 });
     }
@@ -98,6 +106,51 @@ export async function POST(request: NextRequest) {
     }
 
     normalizedEntries.push({ weekday, startTime, endTime, isWorking });
+  }
+
+  if (weekdaySet.size !== 7) {
+    return NextResponse.json({ error: "A full 7-day schedule is required" }, { status: 400 });
+  }
+
+  await initializeDefaultBuildingHours();
+  const buildingHours = await getBuildingHours();
+  const buildingByWeekday = new Map(buildingHours.map((entry) => [entry.weekday, entry]));
+
+  for (const entry of normalizedEntries) {
+    if (!entry.isWorking) {
+      continue;
+    }
+
+    const dayHours = buildingByWeekday.get(entry.weekday);
+    if (!dayHours || !dayHours.isOpen) {
+      return NextResponse.json(
+        { error: `Cannot mark weekday ${entry.weekday} as working while the building is closed.` },
+        { status: 400 },
+      );
+    }
+
+    const buildingStartMinutes = parseTimeLabelToMinutes(dayHours.startTime);
+    const buildingEndMinutes = parseTimeLabelToMinutes(dayHours.endTime);
+    const staffStartMinutes = parseTimeLabelToMinutes(entry.startTime);
+    const staffEndMinutes = parseTimeLabelToMinutes(entry.endTime);
+
+    if (
+      buildingStartMinutes === null ||
+      buildingEndMinutes === null ||
+      staffStartMinutes === null ||
+      staffEndMinutes === null
+    ) {
+      return NextResponse.json({ error: "Invalid time format. Use values like 9:00 AM." }, { status: 400 });
+    }
+
+    if (staffStartMinutes < buildingStartMinutes || staffEndMinutes > buildingEndMinutes) {
+      return NextResponse.json(
+        {
+          error: `Staff hours for ${entry.weekday} must stay within building hours (${dayHours.startTime} - ${dayHours.endTime}).`,
+        },
+        { status: 400 },
+      );
+    }
   }
 
   try {

@@ -176,6 +176,7 @@ export function CustomerHeader() {
     }
 
     let active = true;
+    let pollInterval: NodeJS.Timeout | null = null;
 
     async function refreshStatusNotifications() {
       try {
@@ -194,6 +195,18 @@ export function CustomerHeader() {
 
         const unread = syncAppointmentStatusChangeNotifications(Array.isArray(payload) ? payload : []);
         setUnreadStatusChangeCount(unread.length);
+
+        // Only poll if user has active appointments
+        const hasActive = Array.isArray(payload) && payload.some((a) => a.status === "pending" || a.status === "accepted");
+        if (!hasActive && pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        } else if (hasActive && !pollInterval) {
+          // Start polling with 45s interval only if there are active appointments
+          pollInterval = setInterval(() => {
+            void refreshStatusNotifications();
+          }, 45000);
+        }
       } catch {
         if (active) {
           setUnreadStatusChangeCount(0);
@@ -209,14 +222,12 @@ export function CustomerHeader() {
 
     window.addEventListener("focus", onFocus);
 
-    const pollInterval = setInterval(() => {
-      void refreshStatusNotifications();
-    }, 15000);
-
     return () => {
       active = false;
       window.removeEventListener("focus", onFocus);
-      clearInterval(pollInterval);
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
     };
   }, [sessionEmail]);
 

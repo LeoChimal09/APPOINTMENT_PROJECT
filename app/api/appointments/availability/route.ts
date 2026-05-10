@@ -1,5 +1,5 @@
 import { getDb } from "@/server/db/client";
-import { businessWeeklyHoursTable, staffMembersTable, staffWeeklyAvailabilityTable, staffUnavailabilityTable, appointmentsTable } from "@/server/db/schema";
+import { businessWeeklyHoursTable, staffMembersTable, staffWeeklyAvailabilityTable, appointmentsTable } from "@/server/db/schema";
 import { eq, and, gte, lte } from "drizzle-orm";
 import { parseTimeLabelToMinutes } from "@/lib/building-hours";
 
@@ -21,10 +21,6 @@ function parseHourLabel(value: string) {
   }
 
   return parsedValue;
-}
-
-function isDateWithinRange(dateIso: string, startDateIso: string, endDateIso: string) {
-  return dateIso >= startDateIso && dateIso <= endDateIso;
 }
 
 function getDaysInMonth(monthValue: string) {
@@ -81,20 +77,10 @@ async function getMonthlyAvailability(monthValue: string, barber: string): Promi
   const buildingHoursByWeekday = new Map(buildingHours.map((entry) => [entry.weekday, entry]));
   const staffId = staffMemberRows[0].id;
 
-  const [weeklyAvailability, unavailabilityOverrides] = await Promise.all([
-    db
-      .select()
-      .from(staffWeeklyAvailabilityTable)
-      .where(eq(staffWeeklyAvailabilityTable.staffId, staffId)),
-    db
-      .select()
-      .from(staffUnavailabilityTable)
-      .where(and(
-        eq(staffUnavailabilityTable.staffId, staffId),
-        lte(staffUnavailabilityTable.dateIso, monthEnd),
-        gte(staffUnavailabilityTable.endDateIso, monthStart),
-      )),
-  ]);
+  const weeklyAvailability = await db
+    .select()
+    .from(staffWeeklyAvailabilityTable)
+    .where(eq(staffWeeklyAvailabilityTable.staffId, staffId));
 
   const weeklyAvailabilityByWeekday = new Map<number, typeof weeklyAvailability>();
   for (const entry of weeklyAvailability) {
@@ -105,10 +91,11 @@ async function getMonthlyAvailability(monthValue: string, barber: string): Promi
 
   const bookedHoursByDate = new Map<string, Set<number>>();
   for (const appointment of appointments) {
-    const appointmentHour = parseHourLabel(appointment.appointmentTime.split(":")[0] ?? "");
-    if (appointmentHour === null) {
+    const appointmentMinutes = parseTimeLabelToMinutes(appointment.appointmentTime);
+    if (appointmentMinutes === null) {
       continue;
     }
+    const appointmentHour = Math.floor(appointmentMinutes / 60);
 
     const existingHours = bookedHoursByDate.get(appointment.appointmentDateIso) ?? new Set<number>();
     existingHours.add(appointmentHour);
@@ -136,16 +123,6 @@ async function getMonthlyAvailability(monthValue: string, barber: string): Promi
 
     const weekdayEntries = (weeklyAvailabilityByWeekday.get(weekday) ?? []).filter((entry) => entry.isWorking);
     if (weekdayEntries.length === 0) {
-      availabilityByDate[dateIso] = { available: false };
-      continue;
-    }
-
-    const dateOverrides = unavailabilityOverrides.filter((entry) => {
-      const endDateIso = entry.endDateIso || entry.dateIso;
-      return isDateWithinRange(dateIso, entry.dateIso, endDateIso);
-    });
-
-    if (dateOverrides.some((entry) => entry.isAllDay)) {
       availabilityByDate[dateIso] = { available: false };
       continue;
     }
@@ -179,25 +156,6 @@ async function getMonthlyAvailability(monthValue: string, barber: string): Promi
         });
 
         if (!isWithinStaffSchedule) {
-          return false;
-        }
-
-        const isBlockedByPartialOverride = dateOverrides.some((entry) => {
-          if (entry.isAllDay || !entry.startTime || !entry.endTime) {
-            return false;
-          }
-
-          const startMinutes = parseTimeLabelToMinutes(entry.startTime);
-          const endMinutes = parseTimeLabelToMinutes(entry.endTime);
-
-          if (startMinutes === null || endMinutes === null) {
-            return false;
-          }
-
-          return appointmentMinutes >= startMinutes && appointmentMinutes < endMinutes;
-        });
-
-        if (isBlockedByPartialOverride) {
           return false;
         }
 
@@ -295,44 +253,6 @@ async function getAvailabilityForHour(dateIso: string, barber: string, hourNum: 
     };
   }
 
-  const unavailabilityOverrides = await db
-    .select()
-    .from(staffUnavailabilityTable)
-    .where(and(
-      eq(staffUnavailabilityTable.staffId, staffId),
-      lte(staffUnavailabilityTable.dateIso, dateIso),
-      gte(staffUnavailabilityTable.endDateIso, dateIso),
-    ));
-
-  for (const override of unavailabilityOverrides) {
-    if (override.isAllDay) {
-      return {
-        available: false,
-        reason: `Staff member is unavailable: ${override.reason}`,
-        blockedBy: "Staff Hours",
-        rank: 2,
-      };
-    }
-
-    if (override.startTime && override.endTime) {
-      const overrideStartMinutes = parseTimeLabelToMinutes(override.startTime);
-      const overrideEndMinutes = parseTimeLabelToMinutes(override.endTime);
-      if (
-        overrideStartMinutes !== null
-        && overrideEndMinutes !== null
-        && appointmentMinutes >= overrideStartMinutes
-        && appointmentMinutes < overrideEndMinutes
-      ) {
-        return {
-          available: false,
-          reason: `Staff member is unavailable during this time: ${override.reason}`,
-          blockedBy: "Staff Hours",
-          rank: 2,
-        };
-      }
-    }
-  }
-
   const bookedSlots = await db
     .select()
     .from(appointmentsTable)
@@ -342,9 +262,14 @@ async function getAvailabilityForHour(dateIso: string, barber: string, hourNum: 
       eq(appointmentsTable.status, "accepted"),
     ));
 
-  const isSlotBooked = bookedSlots.some(
-    (apt) => parseInt(apt.appointmentTime.split(":")[0], 10) === hourNum,
-  );
+  const isSlotBooked = bookedSlots.some((apt) => {
+    const appointmentMinutes = parseTimeLabelToMinutes(apt.appointmentTime);
+    if (appointmentMinutes === null) {
+      return false;
+    }
+
+    return Math.floor(appointmentMinutes / 60) === hourNum;
+  });
 
   if (isSlotBooked) {
     return {

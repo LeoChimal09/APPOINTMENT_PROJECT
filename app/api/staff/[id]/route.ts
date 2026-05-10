@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isOwnerAuthorized } from "@/server/auth/owner-auth";
 import { updateStaffMember, deleteStaffMember } from "@/server/repositories/staff-repository";
+import { cancelAcceptedAppointmentsForBarberOnDate } from "@/server/repositories/appointments-repository";
+import { printCustomerStatusUpdateNotification } from "@/lib/mailer";
 
 type StaffRouteContext = {
   params: Promise<{
@@ -32,6 +34,32 @@ export async function PATCH(request: NextRequest, context: StaffRouteContext) {
     if (!staff) {
       return NextResponse.json({ error: "Staff member not found" }, { status: 404 });
     }
+
+    if (!isActive) {
+      const todayIso = new Date().toISOString().split("T")[0];
+      const autoCancellationNote = "Appointment cancelled because your barber was marked inactive for today.";
+      const cancelledAppointments = await cancelAcceptedAppointmentsForBarberOnDate(
+        staff.name,
+        todayIso,
+        autoCancellationNote,
+      );
+
+      for (const appointment of cancelledAppointments) {
+        printCustomerStatusUpdateNotification({
+          ref: appointment.ref,
+          customerName: appointment.customerName,
+          customerEmail: appointment.customerEmail,
+          service: appointment.service,
+          barber: appointment.barber,
+          dateLabel: appointment.dateLabel,
+          time: appointment.time,
+          fromStatus: "accepted",
+          toStatus: "cancelled",
+          cancellationNote: autoCancellationNote,
+        });
+      }
+    }
+
     return NextResponse.json(staff);
   } catch (err) {
     return NextResponse.json(

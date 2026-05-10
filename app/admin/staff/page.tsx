@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Listbox } from "@headlessui/react";
-import { DatePickerPopover } from "@/app/components/date-picker-popover";
 
 type StaffMember = {
   id: number;
@@ -19,16 +18,6 @@ type WeeklyScheduleEntry = {
   endTime: string;
 };
 
-type UnavailabilityForm = {
-  staffId: number;
-  startDateIso: string;
-  endDateIso: string;
-  isAllDay: boolean;
-  startTime: string;
-  endTime: string;
-  reason: string;
-};
-
 type BuildingHoursEntry = {
   weekday: number;
   isOpen: boolean;
@@ -36,7 +25,7 @@ type BuildingHoursEntry = {
   endTime: string;
 };
 
-type StaffViewMode = "add" | "schedule" | "overrides" | "staff" | "building";
+type StaffViewMode = "add" | "schedule" | "staff" | "building";
 type DropdownOption<T extends string | number> = {
   value: T;
   label: string;
@@ -56,6 +45,80 @@ const timeDropdownOptions: DropdownOption<string>[] = timeOptions.map((time) => 
   value: time,
   label: time,
 }));
+
+const timeToMinutesMap = new Map<string, number>(
+  timeOptions.map((time, index) => [time, (index + 6) * 60]),
+);
+
+function parseTimeLabelToMinutes(value: string) {
+  return timeToMinutesMap.get(value) ?? null;
+}
+
+function minutesToTimeLabel(minutes: number) {
+  const fromPreset = timeOptions.find((time) => timeToMinutesMap.get(time) === minutes);
+  if (fromPreset) {
+    return fromPreset;
+  }
+
+  const normalizedHour = Math.floor(minutes / 60);
+  const suffix = normalizedHour >= 12 ? "PM" : "AM";
+  const displayHour = normalizedHour % 12 === 0 ? 12 : normalizedHour % 12;
+  return `${displayHour}:00 ${suffix}`;
+}
+
+function normalizeBuildingHoursEntries(entries: BuildingHoursEntry[]): BuildingHoursEntry[] {
+  return entries.map((entry) => {
+    const startMinutes = parseTimeLabelToMinutes(entry.startTime);
+    const endMinutes = parseTimeLabelToMinutes(entry.endTime);
+
+    if (startMinutes === null || endMinutes === null || startMinutes < endMinutes) {
+      return entry;
+    }
+
+    const clampedEnd = Math.min(startMinutes + 60, 20 * 60);
+    return {
+      ...entry,
+      endTime: minutesToTimeLabel(clampedEnd),
+    };
+  });
+}
+
+function clampWeeklyScheduleToBuildingHours(
+  schedule: WeeklyScheduleEntry[],
+  buildingHours: BuildingHoursEntry[],
+): WeeklyScheduleEntry[] {
+  if (buildingHours.length === 0) {
+    return schedule;
+  }
+
+  return schedule.map((entry) => {
+    if (!entry.isWorking) {
+      return entry;
+    }
+
+    const dayHours = buildingHours.find((hourEntry) => hourEntry.weekday === entry.weekday);
+    if (!dayHours || !dayHours.isOpen) {
+      return { ...entry, isWorking: false };
+    }
+
+    const startMinutes = parseTimeLabelToMinutes(dayHours.startTime);
+    const endMinutes = parseTimeLabelToMinutes(dayHours.endTime);
+    if (startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
+      return { ...entry, isWorking: false };
+    }
+
+    const currentStart = parseTimeLabelToMinutes(entry.startTime) ?? startMinutes;
+    const currentEnd = parseTimeLabelToMinutes(entry.endTime) ?? endMinutes;
+    const clampedStart = Math.max(startMinutes, Math.min(currentStart, endMinutes - 60));
+    const clampedEnd = Math.min(endMinutes, Math.max(currentEnd, clampedStart + 60));
+
+    return {
+      ...entry,
+      startTime: minutesToTimeLabel(clampedStart),
+      endTime: minutesToTimeLabel(clampedEnd),
+    };
+  });
+}
 
 type HeadlessSelectProps<T extends string | number> = {
   value: T;
@@ -101,10 +164,6 @@ function HeadlessSelect<T extends string | number>({
   );
 }
 
-function getTodayIso() {
-  return new Date().toISOString().split("T")[0];
-}
-
 function createDefaultSchedule(): WeeklyScheduleEntry[] {
   return weekdayLabels.map((label, weekday) => ({
     weekday,
@@ -113,20 +172,6 @@ function createDefaultSchedule(): WeeklyScheduleEntry[] {
     startTime: "9:00 AM",
     endTime: "5:00 PM",
   }));
-}
-
-function createDefaultUnavailabilityForm(): UnavailabilityForm {
-  const todayIso = getTodayIso();
-
-  return {
-    staffId: 0,
-    startDateIso: todayIso,
-    endDateIso: todayIso,
-    isAllDay: true,
-    startTime: "1:00 PM",
-    endTime: "5:00 PM",
-    reason: "Unavailable",
-  };
 }
 
 export default function StaffManagementPage() {
@@ -138,7 +183,6 @@ export default function StaffManagementPage() {
   const [activeView, setActiveView] = useState<StaffViewMode>(tabParam || "schedule");
   const [scheduleStaffId, setScheduleStaffId] = useState(0);
   const [weeklySchedule, setWeeklySchedule] = useState<WeeklyScheduleEntry[]>(createDefaultSchedule());
-  const [unavailabilityForm, setUnavailabilityForm] = useState<UnavailabilityForm>(createDefaultUnavailabilityForm());
   const [buildingHours, setBuildingHours] = useState<BuildingHoursEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isScheduleLoading, setIsScheduleLoading] = useState(false);
@@ -148,6 +192,95 @@ export default function StaffManagementPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [staffToDelete, setStaffToDelete] = useState<StaffMember | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  function updateBuildingHours(updater: (current: BuildingHoursEntry[]) => BuildingHoursEntry[]) {
+    setBuildingHours((current) => {
+      const next = normalizeBuildingHoursEntries(updater(current));
+      setWeeklySchedule((previousSchedule) => clampWeeklyScheduleToBuildingHours(previousSchedule, next));
+      return next;
+    });
+  }
+
+  function getBuildingHoursForWeekday(weekday: number) {
+    return buildingHours.find((entry) => entry.weekday === weekday) ?? null;
+  }
+
+  function getDayTimeBounds(weekday: number) {
+    const dayHours = getBuildingHoursForWeekday(weekday);
+    if (!dayHours || !dayHours.isOpen) {
+      return null;
+    }
+
+    const startMinutes = parseTimeLabelToMinutes(dayHours.startTime);
+    const endMinutes = parseTimeLabelToMinutes(dayHours.endTime);
+    if (startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
+      return null;
+    }
+
+    return { startMinutes, endMinutes };
+  }
+
+  function getStartTimeOptions(entry: WeeklyScheduleEntry): DropdownOption<string>[] {
+    const bounds = getDayTimeBounds(entry.weekday);
+    if (!bounds) {
+      return timeDropdownOptions;
+    }
+
+    const currentEndMinutes = parseTimeLabelToMinutes(entry.endTime) ?? bounds.endMinutes;
+    const upperBound = Math.min(currentEndMinutes, bounds.endMinutes);
+
+    const filtered = timeDropdownOptions.filter((option) => {
+      const minutes = parseTimeLabelToMinutes(option.value);
+      return minutes !== null && minutes >= bounds.startMinutes && minutes < upperBound;
+    });
+
+    return filtered.length > 0 ? filtered : timeDropdownOptions;
+  }
+
+  function getEndTimeOptions(entry: WeeklyScheduleEntry): DropdownOption<string>[] {
+    const bounds = getDayTimeBounds(entry.weekday);
+    if (!bounds) {
+      return timeDropdownOptions;
+    }
+
+    const currentStartMinutes = parseTimeLabelToMinutes(entry.startTime) ?? bounds.startMinutes;
+    const lowerBound = Math.max(currentStartMinutes, bounds.startMinutes);
+
+    const filtered = timeDropdownOptions.filter((option) => {
+      const minutes = parseTimeLabelToMinutes(option.value);
+      return minutes !== null && minutes > lowerBound && minutes <= bounds.endMinutes;
+    });
+
+    return filtered.length > 0 ? filtered : timeDropdownOptions;
+  }
+
+  function getBuildingStartTimeOptions(entry: BuildingHoursEntry): DropdownOption<string>[] {
+    const currentEndMinutes = parseTimeLabelToMinutes(entry.endTime);
+    if (currentEndMinutes === null) {
+      return timeDropdownOptions;
+    }
+
+    const filtered = timeDropdownOptions.filter((option) => {
+      const minutes = parseTimeLabelToMinutes(option.value);
+      return minutes !== null && minutes < currentEndMinutes;
+    });
+
+    return filtered.length > 0 ? filtered : timeDropdownOptions;
+  }
+
+  function getBuildingEndTimeOptions(entry: BuildingHoursEntry): DropdownOption<string>[] {
+    const currentStartMinutes = parseTimeLabelToMinutes(entry.startTime);
+    if (currentStartMinutes === null) {
+      return timeDropdownOptions;
+    }
+
+    const filtered = timeDropdownOptions.filter((option) => {
+      const minutes = parseTimeLabelToMinutes(option.value);
+      return minutes !== null && minutes > currentStartMinutes;
+    });
+
+    return filtered.length > 0 ? filtered : timeDropdownOptions;
+  }
   const staffDropdownOptions: DropdownOption<number>[] = [
     { value: 0, label: "Select staff member..." },
     ...staff.map((member) => ({ value: member.id, label: member.name })),
@@ -156,12 +289,6 @@ export default function StaffManagementPage() {
   useEffect(() => {
     void loadStaff();
   }, []);
-
-  useEffect(() => {
-    if (scheduleStaffId > 0) {
-      void loadWeeklySchedule(scheduleStaffId);
-    }
-  }, [scheduleStaffId]);
 
   useEffect(() => {
     async function load() {
@@ -198,7 +325,7 @@ export default function StaffManagementPage() {
         return result;
       }
 
-      if (activeView === "building") {
+      if (activeView === "building" || activeView === "schedule") {
         try {
           setIsBuildingLoading(true);
           setError(null);
@@ -207,7 +334,8 @@ export default function StaffManagementPage() {
             throw new Error("Failed to load building hours");
           }
           const hours = (await response.json()) as BuildingHoursEntry[];
-          setBuildingHours(normalizeBuildingHoursLocal(hours));
+          const normalizedHours = normalizeBuildingHoursLocal(hours);
+          updateBuildingHours(() => normalizedHours);
         } catch (err) {
           setError(err instanceof Error ? err.message : "Failed to load building hours");
         } finally {
@@ -235,7 +363,7 @@ export default function StaffManagementPage() {
     }
   }
 
-  async function loadWeeklySchedule(staffId: number) {
+  const loadWeeklySchedule = useCallback(async (staffId: number) => {
     try {
       setIsScheduleLoading(true);
       setError(null);
@@ -268,13 +396,13 @@ export default function StaffManagementPage() {
           : defaultEntry;
       });
 
-      setWeeklySchedule(merged);
+      setWeeklySchedule(clampWeeklyScheduleToBuildingHours(merged, buildingHours));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load staff schedule");
     } finally {
       setIsScheduleLoading(false);
     }
-  }
+  }, [buildingHours]);
 
   async function handleAddStaff() {
     if (!newStaffName.trim()) {
@@ -326,7 +454,8 @@ export default function StaffManagementPage() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to save weekly schedule");
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Failed to save weekly schedule");
       }
 
       setSuccessMessage("Weekly schedule saved");
@@ -334,35 +463,6 @@ export default function StaffManagementPage() {
       await loadWeeklySchedule(scheduleStaffId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save weekly schedule");
-    }
-  }
-
-  async function handleMarkUnavailable() {
-    if (unavailabilityForm.staffId === 0) {
-      setError("Please select a staff member");
-      return;
-    }
-
-    try {
-      setError(null);
-      const response = await fetch("/api/staff/unavailability", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(unavailabilityForm),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to mark unavailability");
-      }
-
-      setSuccessMessage("Availability override saved");
-      setTimeout(() => setSuccessMessage(null), 3000);
-      setUnavailabilityForm((current) => ({
-        ...createDefaultUnavailabilityForm(),
-        staffId: current.staffId,
-      }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to mark unavailability");
     }
   }
 
@@ -424,7 +524,8 @@ export default function StaffManagementPage() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to save building hours");
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error || "Failed to save building hours");
       }
 
       setSuccessMessage("Building hours saved successfully");
@@ -443,7 +544,7 @@ export default function StaffManagementPage() {
           Staff Management
         </h1>
         <p className="mt-3 max-w-3xl text-lg leading-8 text-[var(--muted)]">
-          Set each team member&apos;s recurring weekly schedule, then use date overrides for vacations, call-offs, or partial-day changes.
+          Set each team member&apos;s recurring weekly schedule, manage active status, and control building hours.
         </p>
       </section>
 
@@ -466,14 +567,13 @@ export default function StaffManagementPage() {
               Staff tools
             </p>
             <p className="mt-1 text-sm text-[var(--muted)]">
-              Switch between setup, schedules, overrides, and roster management.
+              Switch between setup, schedules, roster management, and building hours.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {[
               { id: "add", label: "Add staff" },
               { id: "schedule", label: "Weekly schedule" },
-              { id: "overrides", label: "Overrides" },
               { id: "staff", label: "Staff members" },
               { id: "building", label: "Building hours" },
             ].map((view) => (
@@ -481,9 +581,10 @@ export default function StaffManagementPage() {
                 key={view.id}
                 type="button"
                 onClick={() => setActiveView(view.id as StaffViewMode)}
+                aria-pressed={activeView === view.id}
                 className={activeView === view.id
-                  ? "btn btn-primary btn-compact"
-                  : "btn btn-secondary btn-compact"
+                  ? "inline-flex w-full items-center justify-center rounded-lg border border-[var(--accent-strong)] bg-[var(--button-primary)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--surface)] transition hover:bg-[var(--button-primary-hover)]"
+                  : "inline-flex w-full items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-soft)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--accent-strong)] transition hover:border-[var(--accent-strong)] hover:bg-[var(--button-secondary-hover)]"
                 }
               >
                 {view.label}
@@ -540,7 +641,15 @@ export default function StaffManagementPage() {
             </label>
             <HeadlessSelect
               value={scheduleStaffId}
-              onChange={(nextValue) => setScheduleStaffId(nextValue)}
+              onChange={(nextValue) => {
+                setScheduleStaffId(nextValue);
+
+                if (nextValue > 0) {
+                  void loadWeeklySchedule(nextValue);
+                } else {
+                  setWeeklySchedule(createDefaultSchedule());
+                }
+              }}
               options={staffDropdownOptions}
               className="mt-2"
             />
@@ -550,6 +659,7 @@ export default function StaffManagementPage() {
         {scheduleStaffId > 0 ? (
         <div className="mt-5 space-y-3">
           {weeklySchedule.map((entry, index) => (
+            
             <div
               key={entry.weekday}
               className="grid gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] p-4 md:grid-cols-[1.2fr_0.8fr_1fr_1fr] md:items-center"
@@ -590,7 +700,7 @@ export default function StaffManagementPage() {
                       ),
                     )
                   }
-                  options={timeDropdownOptions}
+                  options={getStartTimeOptions(entry)}
                   className="mt-2"
                 />
               </div>
@@ -609,7 +719,7 @@ export default function StaffManagementPage() {
                       ),
                     )
                   }
-                  options={timeDropdownOptions}
+                  options={getEndTimeOptions(entry)}
                   className="mt-2"
                 />
               </div>
@@ -644,147 +754,6 @@ export default function StaffManagementPage() {
             Save weekly schedule
           </button>
         </div>
-      </section>
-      ) : null}
-
-      {activeView === "overrides" ? (
-      <section className="rounded-[2rem] border border-[var(--border)] bg-[var(--surface)] p-6">
-        <h2 className="text-2xl font-semibold tracking-[-0.02em] text-[var(--foreground)]">
-          Availability Overrides
-        </h2>
-        <p className="mt-2 text-sm text-[var(--muted)]">
-          Use this for vacations, call-offs, or partial-day exceptions without rewriting the normal weekly schedule.
-        </p>
-
-        <div className="mt-5 max-w-xl">
-          <label className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted)]">
-            Staff Member
-          </label>
-          <HeadlessSelect
-            value={unavailabilityForm.staffId}
-            onChange={(nextValue) =>
-              setUnavailabilityForm((current) => ({
-                ...current,
-                staffId: nextValue,
-              }))
-            }
-            options={staffDropdownOptions}
-            className="mt-2"
-          />
-        </div>
-
-        {unavailabilityForm.staffId > 0 ? (
-        <>
-        <div className="mt-5 space-y-4">
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] px-4 py-3">
-            <div className="flex items-center gap-3">
-              <input
-                id="all-day-override"
-                type="checkbox"
-                checked={unavailabilityForm.isAllDay}
-                onChange={(event) =>
-                  setUnavailabilityForm((current) => ({
-                    ...current,
-                    isAllDay: event.target.checked,
-                  }))
-                }
-                className="h-4 w-4 accent-[var(--accent-strong)]"
-              />
-              <label htmlFor="all-day-override" className="text-sm font-medium text-[var(--foreground)]">
-                Mark the selected range unavailable for the full day
-              </label>
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <DatePickerPopover
-              label="Start Date"
-              value={unavailabilityForm.startDateIso}
-              onChange={(date) =>
-                setUnavailabilityForm((current) => ({
-                  ...current,
-                  startDateIso: date,
-                }))
-              }
-            />
-            <DatePickerPopover
-              label="End Date"
-              value={unavailabilityForm.endDateIso}
-              onChange={(date) =>
-                setUnavailabilityForm((current) => ({
-                  ...current,
-                  endDateIso: date,
-                }))
-              }
-            />
-          </div>
-
-          {!unavailabilityForm.isAllDay && (
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted)]">
-                  Start Time
-                </label>
-                <HeadlessSelect
-                  value={unavailabilityForm.startTime}
-                  onChange={(nextValue) =>
-                    setUnavailabilityForm((current) => ({
-                      ...current,
-                      startTime: nextValue,
-                    }))
-                  }
-                  options={timeDropdownOptions}
-                  className="mt-2"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted)]">
-                  End Time
-                </label>
-                <HeadlessSelect
-                  value={unavailabilityForm.endTime}
-                  onChange={(nextValue) =>
-                    setUnavailabilityForm((current) => ({
-                      ...current,
-                      endTime: nextValue,
-                    }))
-                  }
-                  options={timeDropdownOptions}
-                  className="mt-2"
-                />
-              </div>
-            </div>
-          )}
-
-          <div>
-            <label className="text-xs font-medium uppercase tracking-[0.12em] text-[var(--muted)]">
-              Reason
-            </label>
-            <input
-              type="text"
-              value={unavailabilityForm.reason}
-              onChange={(event) =>
-                setUnavailabilityForm((current) => ({
-                  ...current,
-                  reason: event.target.value,
-                }))
-              }
-              placeholder="e.g., Vacation, Sick day, Training"
-              className="mt-2 w-full rounded-2xl border border-[var(--border)] bg-[var(--surface-soft)] px-4 py-3 text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--accent-strong)]"
-            />
-          </div>
-        </div>
-
-        <button onClick={() => void handleMarkUnavailable()} className="btn btn-primary mt-6">
-          Save availability override
-        </button>
-        </>
-        ) : (
-        <div className="mt-5 rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface-soft)] px-5 py-6 text-sm text-[var(--muted)]">
-          Select a staff member to add a vacation, full-day closure, or partial-day override.
-        </div>
-        )}
       </section>
       ) : null}
 
@@ -864,7 +833,7 @@ export default function StaffManagementPage() {
                     type="button"
                     className={entry.isOpen ? "btn btn-primary btn-compact" : "btn btn-secondary btn-compact"}
                     onClick={() =>
-                      setBuildingHours((current) =>
+                      updateBuildingHours((current) =>
                         current.map((item, itemIndex) =>
                           itemIndex === index ? { ...item, isOpen: !item.isOpen } : item,
                         ),
@@ -883,13 +852,13 @@ export default function StaffManagementPage() {
                     value={entry.startTime}
                     disabled={!entry.isOpen}
                     onChange={(nextValue) =>
-                      setBuildingHours((current) =>
+                      updateBuildingHours((current) =>
                         current.map((item, itemIndex) =>
                           itemIndex === index ? { ...item, startTime: nextValue } : item,
                         ),
                       )
                     }
-                    options={timeDropdownOptions}
+                    options={getBuildingStartTimeOptions(entry)}
                     className="mt-2"
                   />
                 </div>
@@ -902,13 +871,13 @@ export default function StaffManagementPage() {
                     value={entry.endTime}
                     disabled={!entry.isOpen}
                     onChange={(nextValue) =>
-                      setBuildingHours((current) =>
+                      updateBuildingHours((current) =>
                         current.map((item, itemIndex) =>
                           itemIndex === index ? { ...item, endTime: nextValue } : item,
                         ),
                       )
                     }
-                    options={timeDropdownOptions}
+                    options={getBuildingEndTimeOptions(entry)}
                     className="mt-2"
                   />
                 </div>
@@ -955,7 +924,7 @@ export default function StaffManagementPage() {
               Delete Staff Member
             </h3>
             <p className="mt-3 text-sm text-[var(--muted)]">
-              Are you sure you want to delete <span className="font-semibold text-[var(--foreground)]">{staffToDelete.name}</span>? This action cannot be undone and will remove all their schedules and availability overrides.
+              Are you sure you want to delete <span className="font-semibold text-[var(--foreground)]">{staffToDelete.name}</span>? This action cannot be undone and will remove all their schedules.
             </p>
             {error ? (
               <p className="mt-3 rounded-xl border border-red-300/60 bg-red-500/10 px-3 py-2 text-sm text-red-600">

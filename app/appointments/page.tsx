@@ -86,7 +86,7 @@ const statusFilterOptions: StatusOption[] = [
 ];
 
 function canHideFromHistory(status: AppointmentStatus) {
-  return status === "completed" || status === "cancelled" || status === "denied" || status === "expired";
+  return status === "completed" || status === "cancelled" || status === "expired";
 }
 
 function getCustomerActionClass(kind: "cancel" | "bookAgain", disabled: boolean) {
@@ -213,7 +213,25 @@ export default function MyAppointmentsPage() {
 
   async function handleCancel(ref: string) {
     if (isGuestMode) {
-      throw new Error("Sign in is required to cancel appointments.");
+      const currentAppointment = appointments.find((appointment) => appointment.ref === ref);
+      if (!currentAppointment) {
+        throw new Error("Appointment not found.");
+      }
+
+      if (currentAppointment.status !== "pending" && currentAppointment.status !== "accepted") {
+        throw new Error("Only pending or accepted appointments can be cancelled.");
+      }
+
+      const updatedAppointments: AppointmentRecord[] = appointments.map((appointment) =>
+        appointment.ref === ref
+          ? { ...appointment, status: "cancelled" as AppointmentStatus }
+          : appointment,
+      );
+
+      setStoredGuestAppointments(updatedAppointments);
+      setAppointments(updatedAppointments);
+      setError(null);
+      return;
     }
 
     const response = await fetch(`/api/appointments/${encodeURIComponent(ref)}`, {
@@ -293,7 +311,8 @@ export default function MyAppointmentsPage() {
   async function handleClearAll() {
     if (isGuestMode) {
       const shouldRemove = (appointment: AppointmentRecord) =>
-        selectedBarber === "all" || appointment.barber.trim() === selectedBarber;
+        (selectedBarber === "all" || appointment.barber.trim() === selectedBarber) &&
+        canHideFromHistory(appointment.status);
 
       const remaining = appointments.filter((appointment) => !shouldRemove(appointment));
       setStoredGuestAppointments(remaining);
@@ -538,9 +557,8 @@ export default function MyAppointmentsPage() {
           <div className="flex flex-col gap-3">
             {sortedAppointments.map((appointment) => {
               const canCancel =
-                !isGuestMode &&
                 (appointment.status === "pending" || appointment.status === "accepted");
-              const canHide = isGuestMode || canHideFromHistory(appointment.status);
+              const canHide = canHideFromHistory(appointment.status);
               const canBookAgain = canHide;
 
               return (

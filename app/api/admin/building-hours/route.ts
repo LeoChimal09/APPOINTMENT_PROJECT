@@ -2,6 +2,30 @@ import { NextRequest } from "next/server";
 import { getBuildingHours, initializeDefaultBuildingHours, setBuildingHours } from "@/server/db/building-hours-repository";
 import { isOwnerAuthorized } from "@/server/auth/owner-auth";
 
+const timeLabelPattern = /^\d{1,2}:\d{2}\s(?:AM|PM)$/i;
+
+function parseTimeLabelToMinutes(value: string) {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const [, rawHour, rawMinutes, rawPeriod] = match;
+  const period = rawPeriod.toUpperCase();
+  let hour = Number.parseInt(rawHour, 10) % 12;
+  const minutes = Number.parseInt(rawMinutes, 10);
+
+  if (Number.isNaN(hour) || Number.isNaN(minutes)) {
+    return null;
+  }
+
+  if (period === "PM") {
+    hour += 12;
+  }
+
+  return (hour * 60) + minutes;
+}
+
 export async function GET(request: NextRequest) {
   if (!(await isOwnerAuthorized(request))) {
     return Response.json(
@@ -76,6 +100,25 @@ export async function POST(request: NextRequest) {
         { error: "Building hours must include exactly one entry for each weekday (0-6)." },
         { status: 400 },
       );
+    }
+
+    for (const entry of entries) {
+      if (!timeLabelPattern.test(entry.startTime) || !timeLabelPattern.test(entry.endTime)) {
+        return Response.json(
+          { error: "Invalid time format. Use values like 9:00 AM." },
+          { status: 400 },
+        );
+      }
+
+      const startMinutes = parseTimeLabelToMinutes(entry.startTime);
+      const endMinutes = parseTimeLabelToMinutes(entry.endTime);
+
+      if (startMinutes === null || endMinutes === null || startMinutes >= endMinutes) {
+        return Response.json(
+          { error: `Weekday ${entry.weekday} must have an end time after start time.` },
+          { status: 400 },
+        );
+      }
     }
 
     await setBuildingHours(entries);

@@ -63,18 +63,6 @@ export const staffWeeklyAvailabilityTable = mysqlTable("staff_weekly_availabilit
   createdAt: varchar("created_at", { length: 40 }).notNull(),
 });
 
-export const staffUnavailabilityTable = mysqlTable("staff_unavailability", {
-  id: int("id").autoincrement().primaryKey(),
-  staffId: int("staff_id").notNull(),
-  dateIso: varchar("date_iso", { length: 40 }).notNull(),
-  endDateIso: varchar("end_date_iso", { length: 40 }).notNull().default(""),
-  startTime: varchar("start_time", { length: 20 }),
-  endTime: varchar("end_time", { length: 20 }),
-  isAllDay: boolean("is_all_day").notNull().default(true),
-  reason: varchar("reason", { length: 255 }).notNull().default("Unavailable"),
-  createdAt: varchar("created_at", { length: 40 }).notNull(),
-});
-
 export const businessStatusTable = mysqlTable("business_status", {
   id: int("id").autoincrement().primaryKey(),
   acceptsBookings: boolean("accepts_bookings").notNull().default(true),

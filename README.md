@@ -9,7 +9,7 @@ Customer-facing barber booking experience built with Next.js App Router, React, 
 - Confirmation flow with persisted draft contact info and guest-mode support
 - Customer appointments page with status filters, cancel, clear history, and book-again actions
 - Admin dashboard with hover quick-links (Appointments and Staff)
-- Admin staff management for roster, weekly schedules, overrides, and building hours
+- Admin staff management for roster, weekly schedules, active/inactive control, and building hours
 - API-backed appointment persistence via MySQL + Drizzle
 
 ## Tech Stack
