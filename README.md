@@ -1,199 +1,184 @@
-# Cutting Edge Appointment Project
+# Cutting Edge Appointments
 
-Customer-facing barber booking experience built with Next.js App Router, React, Tailwind CSS v4, Drizzle ORM, and MySQL.
+> A full-stack barber booking platform built with Next.js 16, React 19, TypeScript, Drizzle ORM, and MySQL — featuring real-time availability, multi-role auth, and an admin dashboard.
+
+---
+
+## Why This Matters
+
+Scheduling in service businesses is still largely manual — phone calls, walk-ins, or clunky third-party tools that don't fit the brand. This project tackles that head-on by building a complete, self-hosted booking system where:
+
+- **Customers** can browse staff, pick a service, and book a time slot in under a minute
+- **Business owners** manage staff schedules, building hours, and appointment statuses from a dedicated admin panel
+- **No third-party booking fees** — the business owns its data and workflow end to end
+
+This is the kind of real-world problem full-stack skills are built for.
+
+---
+
+## Screenshots
+
+### Home — hero with live "Your next visit" preview and business hours
+![Home page](public/screenshots/home.png)
+
+### Services — service menu with durations and staff cards showing real-time next-available slots
+![Services and staff](public/screenshots/services.png)
+
+### Testimonials & Social — review section and social proof footer
+![Reviews and social](public/screenshots/home-reviews.png)
+
+### Booking Flow — calendar + service/barber picker + available time slots in one view
+![Booking flow](public/screenshots/booking.png)
+
+### My Appointments — customer view with status badges, cancel, and book-again actions
+![My appointments](public/screenshots/my-appointments.png)
+
+### Admin — Appointment Requests — full workflow (Pending → Accepted → Completed), filter by barber/status
+![Admin appointments](public/screenshots/admin-appointments.png)
+
+### Admin — Staff Weekly Schedule — per-staff day-by-day schedule editor
+![Staff weekly schedule](public/screenshots/admin-staff-schedule.png)
+
+### Admin — Building Hours — business open/close hours that gate customer availability
+![Building hours](public/screenshots/admin-building-hours.png)
+
+---
 
 ## Features
 
-- Customer home page with upcoming-visit summary and live staff/team cards
-- Booking flow with date, barber, service, and time selection based on staff + building hours
-- Confirmation flow with persisted draft contact info and guest-mode support
-- Customer appointments page with status filters, cancel, clear history, and book-again actions
-- Admin dashboard with hover quick-links (Appointments and Staff)
-- Admin staff management for roster, weekly schedules, active/inactive control, and building hours
-- API-backed appointment persistence via MySQL + Drizzle
+**Customer Experience**
+- Home page with upcoming visit summary and live staff cards
+- Multi-step booking flow: pick a date → select a barber → choose a service → confirm a time
+- Availability is computed in real time from staff schedules and business hours — no double-booking
+- Guest mode with persisted draft contact info for returning visitors
+- Appointments page with status filters, cancel, clear history, and book-again
+
+**Admin / Owner**
+- Admin dashboard with quick-nav to Appointments and Staff
+- Staff roster management: add/remove staff, toggle active/inactive
+- Per-staff weekly schedule editor
+- Business hours configuration
+- Appointment status management across all bookings
+
+**Auth**
+- Google OAuth via NextAuth.js
+- Magic-link / email verification flow (passwordless sign-in)
+- Rate-limited auth endpoints
+- Admin role gated by server-side email allowlist
+
+**Developer Experience**
+- Dockerized MySQL with auto-init SQL — one command to spin up a full local DB
+- Drizzle ORM with push-based schema sync for fast iteration
+- Pre-commit secret scanner (`npm run security:staged`)
+- TypeScript strict mode throughout; ESLint + type checks on CI
+
+---
 
 ## Tech Stack
 
-- Next.js 16
-- React 19
-- Tailwind CSS 4
-- Drizzle ORM
-- MySQL (`mysql2`)
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 16 (App Router) |
+| UI | React 19, Tailwind CSS 4, HeroUI, MUI |
+| Auth | NextAuth.js (Google OAuth + magic link) |
+| ORM | Drizzle ORM |
+| Database | MySQL via `mysql2` |
+| Email | Resend |
+| Payments | Stripe _(coming soon)_ |
+| Containerization | Docker Compose |
+| Testing | Vitest |
 
-## Environment Variables
+---
 
-Create a local env file such as `.env.local` and set:
+## Architecture
 
-```bash
-DATABASE_URL=mysql://USER:PASSWORD@HOST:3306/DB_NAME
-OWNER_DASHBOARD_TOKEN=replace-with-a-long-random-secret
+```
+Browser (React / Next.js App Router)
+        │
+        │  RSC + Client Components
+        ▼
+Next.js API Routes  (/api/*)
+        │
+        │  Drizzle ORM (type-safe queries)
+        ▼
+MySQL Database (Docker / hosted)
 ```
 
-Notes:
+**Key flows:**
 
-- `DATABASE_URL` is required for server-side appointment APIs.
-- `OWNER_DASHBOARD_TOKEN` protects owner-only appointment endpoints.
-- Do not commit real env files or secrets.
+1. **Booking** — Customer selects date/barber/service → client calls `/api/appointments/availability` (reads staff schedules + business hours) → confirmed slot is written to `appointments` table via `/api/appointments`
+2. **Auth** — Sign-in triggers NextAuth; magic-link flow emails a hashed token via Resend → token is verified server-side and exchanged for a JWT session
+3. **Admin** — Protected routes check session email against server-side admin allowlist; all mutations go through authenticated API routes
 
-You can start from `.env.example`.
+**Database schema highlights:** `appointments`, `customers`, `customer_email_verification_tokens`, `staff_members`, `staff_weekly_availability`, `business_weekly_hours`, `business_status`
 
-## Local MySQL with Docker
-
-This repo includes a local MySQL container for development and DBeaver access.
-
-Start MySQL:
-
-```bash
-npm run db:up
-```
-
-Stop MySQL:
-
-```bash
-npm run db:down
-```
-
-The container listens on `127.0.0.1:3308` by default and initializes the `appointments` table automatically on first startup from [docker/mysql/init/01-create-appointments.sql](docker/mysql/init/01-create-appointments.sql).
-
-Docker setup files:
-
-- [docker-compose.yml](docker-compose.yml)
-- [docker/mysql/init/01-create-appointments.sql](docker/mysql/init/01-create-appointments.sql)
-- [.env.example](.env.example)
-
-## DBeaver Connection
-
-Use these values in DBeaver:
-
-- Host: `127.0.0.1`
-- Port: `3308`
-- Database: `appointmentproject`
-- Username: `appointmentproject`
-- Password: `appointmentproject`
-
-Or use your overridden values from `.env.local` if you changed them.
-
-## Drizzle and Schema Sync
-
-The Docker init SQL creates the initial `appointments` table so the app can run immediately.
-
-After you change the Drizzle schema in [server/db/schema.ts](server/db/schema.ts), sync the database with:
-
-```bash
-npm run db:push
-```
-
-If you want a fresh local database after changing init SQL:
-
-```bash
-docker compose down -v
-npm run db:up
-```
+---
 
 ## Getting Started
 
-Install dependencies:
+**Prerequisites:** Node.js 20+, Docker
 
 ```bash
+# 1. Install dependencies
 npm install
-```
 
-If you use Bun in this project, you can also run:
+# 2. Copy env template and fill in values
+cp .env.example .env.local
 
-```bash
-bun install
-```
-
-Run the app:
-
-```bash
-npm run dev
-```
-
-Open `http://localhost:3000`.
-
-## Scripts
-
-```bash
-npm run dev
-npm run build
-npm run lint
-npm run typecheck
-npm run check
+# 3. Start the local MySQL container
 npm run db:up
-npm run db:down
+
+# 4. Push the schema to the database
 npm run db:push
-npm run test:run
-npm run security:staged
+
+# 5. Run the dev server
+npm run dev
 ```
 
-## Owner Dashboard Access
+Open [http://localhost:3000](http://localhost:3000).
 
-The owner dashboard is available at `/owner/appointments`.
-
-To load owner data:
-
-1. Set `OWNER_DASHBOARD_TOKEN` on the server.
-2. Open the owner dashboard.
-3. Paste the same token into the owner access field.
-
-The token is stored in `sessionStorage` only for the current browser session and is sent as `x-owner-token` when requesting protected owner APIs.
-
-## Security Notes
-
-- Owner-scoped appointment endpoints are token-protected.
-- Customer UI still uses browser storage for some local UX state such as confirmation drafts and client-side history views.
-- Server persistence is handled through authenticated API routes and the database connection string from env.
-- Run `npm run security:staged` before committing to scan staged files for likely secrets.
-
-## Repository Hygiene
-
-This repository ignores:
-
-- dependency folders
-- Next.js build output
-- env files
-- editor folders
-- temporary files and caches
-
-## Pre-Commit Recommendation
-
-Before committing, run:
+### Environment Variables
 
 ```bash
-npm run check
-npm run security:staged
+DATABASE_URL=mysql://USER:PASSWORD@HOST:3306/DB_NAME
+NEXTAUTH_SECRET=replace-with-a-long-random-secret
+NEXTAUTH_URL=http://localhost:3000
+GOOGLE_ID=your-google-oauth-client-id
+GOOGLE_SECRET=your-google-oauth-client-secret
+ADMIN_EMAILS=you@example.com
+RESEND_API_KEY=your-resend-api-key
 ```
 
-If you use Bun, equivalent checks are:
+### Useful Scripts
 
 ```bash
-bun run check
-bun run security:staged
+npm run dev          # dev server
+npm run build        # production build
+npm run typecheck    # TypeScript check
+npm run lint         # ESLint
+npm run check        # lint + typecheck together
+npm run test:run     # run Vitest tests
+npm run db:up        # start MySQL container
+npm run db:down      # stop MySQL container
+npm run db:push      # sync Drizzle schema → DB
+npm run db:studio    # open Drizzle Studio
 ```
 
-## Current Product Gaps
+---
 
-These are not all security issues, but they are important before production:
+## Coming Soon
 
-- Customer identity is not authenticated yet.
-- Owner access currently uses a shared token, not full user auth.
-- Some customer pages still read local browser data for UI convenience, which can drift from server data.
-- Rate limiting and audit logging are not implemented yet.
+- Stripe payment integration at checkout
+- Customer notifications (email reminders before appointments)
+- Screenshots and live demo link
 
-## Risk Checklist Before Commit
-
-- Ensure no local env files are staged (`.env.local`, `.env.development.local`, etc.)
-- Run type and lint checks (`npm run check` or `bun run check`)
-- Run staged secret scan (`npm run security:staged` or `bun run security:staged`)
-- Verify owner-only routes still enforce authorization for admin actions
-- Confirm booking and availability flows behave correctly for both signed-in and guest users
+---
 
 ## Deployment
 
-For deployment, ensure:
+Set all environment variables from `.env.example` on your host, ensure HTTPS is enabled, and run:
 
-- `DATABASE_URL` is set
-- `OWNER_DASHBOARD_TOKEN` is set to a strong secret
-- HTTPS is enabled
-- logs do not expose secrets or raw env values
+```bash
+npm run build
+npm run start
+```
